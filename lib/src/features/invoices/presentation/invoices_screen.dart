@@ -82,13 +82,12 @@ Color? _parseHexColor(String? hexString) {
   }
 }
 
-String _formatUsdAmount(num value, {bool withCents = false}) {
-  final money = NumberFormat.decimalPattern('ru');
-  if (withCents) {
-    return '\$${value.toStringAsFixed(2)}';
-  }
-  return '\$${money.format(value.round())}';
-}
+String _formatInvoiceAmount(num value) => NumberFormat.decimalPatternDigits(
+  locale: 'ru',
+  decimalDigits: 2,
+).format(value);
+
+String _formatUsdAmount(num value) => '\$${_formatInvoiceAmount(value)}';
 
 bool _isInvoiceUnpaid(InvoiceItem item) {
   final status = item.status.toLowerCase();
@@ -489,7 +488,6 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
     );
     if (!paymentRequested || !mounted) return;
 
-    final money = NumberFormat.decimalPattern('ru');
     final buffer = StringBuffer();
     buffer.writeln('💳 **Запрос на оплату счёта**');
     buffer.writeln('━━━━━━━━━━━━━━━━━━━━');
@@ -497,15 +495,15 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
     buffer.writeln('🔢 Номер: ${item.invoiceNumber}');
     buffer.writeln('📊 Статус: В обработке');
     buffer.writeln('');
-    buffer.writeln('💵 К оплате: \$${money.format(item.totalCostUsd.round())}');
+    buffer.writeln('💵 К оплате: ${_formatUsdAmount(item.totalCostUsd)}');
     if (item.totalCostCny > 0) {
       buffer.writeln(
-        '🇨🇳 К оплате: ¥${money.format(item.totalCostCny.round())}',
+        '🇨🇳 К оплате: ¥${_formatInvoiceAmount(item.totalCostCny)}',
       );
     }
     if (item.totalCostRub > 0) {
       buffer.writeln(
-        '🇷🇺 К оплате: ${money.format(item.totalCostRub.round())} ₽',
+        '🇷🇺 К оплате: ${_formatInvoiceAmount(item.totalCostRub)} ₽',
       );
     }
 
@@ -1613,7 +1611,6 @@ class _InvoiceDetailSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final money = NumberFormat.decimalPattern('ru');
     final amountUsd = _formatUsdAmount(item.totalCostUsd);
 
     return Container(
@@ -1661,7 +1658,7 @@ class _InvoiceDetailSummaryCard extends StatelessWidget {
                 child: _InvoiceSmallAmount(
                   label: 'Стоимость в рублях',
                   value: item.totalCostRub > 0
-                      ? '${money.format(item.totalCostRub.round())} ₽'
+                      ? '${_formatInvoiceAmount(item.totalCostRub)} ₽'
                       : '—',
                 ),
               ),
@@ -1670,7 +1667,7 @@ class _InvoiceDetailSummaryCard extends StatelessWidget {
                 child: _InvoiceSmallAmount(
                   label: 'Стоимость в юанях',
                   value: item.totalCostCny > 0
-                      ? '¥${money.format(item.totalCostCny.round())}'
+                      ? '¥${_formatInvoiceAmount(item.totalCostCny)}'
                       : '—',
                 ),
               ),
@@ -1858,7 +1855,6 @@ class ClientInvoiceTileState extends ConsumerState<ClientInvoiceTile> {
 
   void _goToPaymentChat(BuildContext context) {
     if (!mounted) return;
-    final money = NumberFormat.decimalPattern('ru');
     final item = widget.item;
     final buffer = StringBuffer();
     buffer.writeln('💳 **Запрос на оплату счёта**');
@@ -1867,15 +1863,15 @@ class ClientInvoiceTileState extends ConsumerState<ClientInvoiceTile> {
     buffer.writeln('🔢 Номер: ${item.invoiceNumber}');
     buffer.writeln('📊 Статус: В обработке');
     buffer.writeln('');
-    buffer.writeln('💵 К оплате: \$${money.format(item.totalCostUsd.round())}');
+    buffer.writeln('💵 К оплате: ${_formatUsdAmount(item.totalCostUsd)}');
     if (item.totalCostCny > 0) {
       buffer.writeln(
-        '🇨🇳 К оплате: ¥${money.format(item.totalCostCny.round())}',
+        '🇨🇳 К оплате: ¥${_formatInvoiceAmount(item.totalCostCny)}',
       );
     }
     if (item.totalCostRub > 0) {
       buffer.writeln(
-        '🇷🇺 К оплате: ${money.format(item.totalCostRub.round())} ₽',
+        '🇷🇺 К оплате: ${_formatInvoiceAmount(item.totalCostRub)} ₽',
       );
     }
     if (item.clientRubRate != null ||
