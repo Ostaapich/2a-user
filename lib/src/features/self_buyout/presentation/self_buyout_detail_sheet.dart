@@ -278,11 +278,13 @@ class _SelfBuyoutDetailSheetState extends ConsumerState<SelfBuyoutDetailSheet> {
             children: [
               _InfoRow(
                 label: tr(context, ru: 'Юани', zh: '人民币'),
-                value: '${request.requestedCnyAmount.toStringAsFixed(2)} RMB',
+                value:
+                    '${formatSelfBuyoutMoney(context, request.requestedCnyAmount)} RMB',
               ),
               _InfoRow(
                 label: tr(context, ru: 'К оплате', zh: '应付'),
-                value: '${request.paymentRubAmount.toStringAsFixed(2)} ₽',
+                value:
+                    '${formatSelfBuyoutMoney(context, request.paymentRubAmount)} ₽',
               ),
               _InfoRow(
                 label: tr(context, ru: 'Курс', zh: '汇率'),
@@ -324,7 +326,7 @@ class _SelfBuyoutDetailSheetState extends ConsumerState<SelfBuyoutDetailSheet> {
         children: [
           _InfoRow(
             label: tr(context, ru: 'Сумма', zh: '金额'),
-            value: '${payment.amountRub.toStringAsFixed(2)} ₽',
+            value: '${formatSelfBuyoutMoney(context, payment.amountRub)} ₽',
           ),
           _InfoRow(
             label: tr(context, ru: 'Статус оплаты', zh: '付款状态'),

@@ -93,9 +93,9 @@ class _FakeSelfBuyoutService extends SelfBuyoutService {
 
 class _MockGarageRepository extends Mock implements GarageRepository {}
 
-Finder _paidButtonInkWell() {
+Finder _receiptButtonInkWell() {
   return find.ancestor(
-    of: find.text('Я оплатил'),
+    of: find.text('Приложить чек'),
     matching: find.byType(InkWell),
   );
 }
@@ -277,8 +277,8 @@ void main() {
     });
   });
 
-  group('Чек обязателен перед подтверждением оплаты', () {
-    testWidgets('счёт: «Я оплатил» отключена без приложенного чека', (
+  group('Чек обязателен для отправки оплаты на проверку', () {
+    testWidgets('счёт: «Приложить чек» открывает выбор без отправки оплаты', (
       tester,
     ) async {
       final service = _FakeBankQrPaymentService();
@@ -294,35 +294,39 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Я оплатил'), findsOneWidget);
-      expect(tester.widget<InkWell>(_paidButtonInkWell()).onTap, isNull);
+      expect(find.text('Приложить чек'), findsOneWidget);
+      expect(tester.widget<InkWell>(_receiptButtonInkWell()).onTap, isNotNull);
       expect(service.uploadCalls, 0);
     });
 
-    testWidgets('самовыкуп: «Я оплатил» отключена без приложенного чека', (
-      tester,
-    ) async {
-      final service = _FakeSelfBuyoutService();
+    testWidgets(
+      'самовыкуп: «Приложить чек» открывает выбор без отправки оплаты',
+      (tester) async {
+        final service = _FakeSelfBuyoutService();
 
-      await tester.pumpApp(
-        const SelfBuyoutQrSheet(
-          requestId: 1,
-          requestNumber: 'SB-1',
-          cnyAmount: 100,
-        ),
-        overrides: [
-          selfBuyoutServiceProvider.overrideWithValue(service),
-          paymentOperatorStatusProvider.overrideWith(
-            (ref) => Stream.value(workingStatus),
+        await tester.pumpApp(
+          const SelfBuyoutQrSheet(
+            requestId: 1,
+            requestNumber: 'SB-1',
+            cnyAmount: 100,
           ),
-        ],
-      );
-      await tester.pumpAndSettle();
+          overrides: [
+            selfBuyoutServiceProvider.overrideWithValue(service),
+            paymentOperatorStatusProvider.overrideWith(
+              (ref) => Stream.value(workingStatus),
+            ),
+          ],
+        );
+        await tester.pumpAndSettle();
 
-      expect(find.text('Я оплатил'), findsOneWidget);
-      expect(tester.widget<InkWell>(_paidButtonInkWell()).onTap, isNull);
-      expect(service.uploadCalls, 0);
-    });
+        expect(find.text('Приложить чек'), findsOneWidget);
+        expect(
+          tester.widget<InkWell>(_receiptButtonInkWell()).onTap,
+          isNotNull,
+        );
+        expect(service.uploadCalls, 0);
+      },
+    );
 
     testWidgets('выбор чека предлагает галерею и файлы', (tester) async {
       final service = _FakeBankQrPaymentService();
@@ -341,11 +345,12 @@ void main() {
       await tester.tap(find.text('Я понял'));
       await tester.pumpAndSettle();
 
-      final attachButton = find.text('Приложить чек (фото/PDF)');
+      final attachButton = find.text('Приложить чек');
       await tester.ensureVisible(attachButton);
       await tester.pumpAndSettle();
       await tester.tap(attachButton);
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
 
       expect(find.text('Приложить чек'), findsOneWidget);
       expect(find.text('Галерея'), findsOneWidget);

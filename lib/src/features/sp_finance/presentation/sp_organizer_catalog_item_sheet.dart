@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -167,34 +168,39 @@ class _SpOrganizerCatalogItemSheetState
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: EdgeInsets.fromLTRB(18, 4, 18, 18 + bottomInset),
               children: [
-                TextField(
-                  key: const ValueKey('sp-catalog-search-field'),
-                  controller: _searchController,
-                  onChanged: _onSearchChanged,
-                  decoration:
-                      SpFinanceUi.inputDecoration(
-                        context,
+                Row(
+                  children: [
+                    Expanded(
+                      child: AppSearchField(
+                        key: const ValueKey('sp-catalog-search-field'),
+                        controller: _searchController,
+                        onChanged: _onSearchChanged,
                         hintText: tr(
                           context,
                           ru: 'Найти товар в каталоге',
                           zh: '在商品目录中搜索',
                         ),
-                        prefixIcon: Icons.search_rounded,
-                      ).copyWith(
-                        suffixIcon: IconButton(
-                          key: const ValueKey('sp-catalog-barcode-scan-button'),
-                          tooltip: tr(
-                            context,
-                            ru: 'Сканировать штрихкод',
-                            zh: '扫描条形码',
-                          ),
-                          onPressed: _scanBarcode,
-                          icon: Icon(
-                            Icons.qr_code_scanner_rounded,
-                            color: context.brandPrimary,
-                          ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 44,
+                      height: 48,
+                      child: IconButton(
+                        key: const ValueKey('sp-catalog-barcode-scan-button'),
+                        tooltip: tr(
+                          context,
+                          ru: 'Сканировать штрихкод',
+                          zh: '扫描条形码',
+                        ),
+                        onPressed: _scanBarcode,
+                        icon: Icon(
+                          Icons.qr_code_scanner_rounded,
+                          color: context.brandPrimary,
                         ),
                       ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 12),
                 if (_loading)

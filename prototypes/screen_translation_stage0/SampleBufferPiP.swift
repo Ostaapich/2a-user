@@ -59,6 +59,27 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
   private var pendingSample: CMReadySampleBuffer<CMSampleBuffer.DynamicContent>?
   private var enqueueTask: Task<Void, Never>?
   private var enqueueGeneration: UInt64 = 0
+  private let halfScreenLayout: HalfScreenPiPLayout?
+  private var detectedPosition: PiPVerticalPosition?
+  private var displayedPosition: PiPVerticalPosition?
+  private var detectedMask: OCRBox?
+  private var displayedMask: OCRBox?
+  private var halfScreenPaused = false
+  var progressLabel = "Переводим…"
+
+  func setDetectedPosition(_ position: PiPVerticalPosition, mask: OCRBox) {
+    // A newly uncovered half is accepted only with a completed fresh snapshot.
+    // Do not replace it immediately with the formerly occluded cached half.
+    detectedPosition = position
+    detectedMask = mask
+  }
+  private var navigationSize: CGSize {
+    guard let layout = halfScreenLayout else { return CGSize(width: 960, height: 540) }
+    return CGSize(width: layout.width, height: layout.height)
+  }
+  var previewAspectRatio: CGFloat {
+    CGFloat(contentWidth) / CGFloat(max(1, contentHeight))
+  }
   private var contentWidth = 960
   private var contentHeight = 540
   private var badgedInput: CVPixelBuffer?
@@ -77,20 +98,30 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
   private var navigationSourceUpdating = false
   private var navigationPageCount: Int { navigationFrames.count }
 
-  func renderNavigationSnapshot(_ image: CVPixelBuffer, previous: Bool, badgeText: String?, updating: Bool = false) {
+  func renderNavigationSnapshot(_ image: CVPixelBuffer, previous: Bool, badgeText: String?, updating: Bool = false, completed: Bool = false) {
     let badge = badgeText ?? (previous ? "Предыдущий снимок" : "")
-    guard navigationSource !== image || navigationSourceBadge != badge || navigationSourceUpdating != updating else { return }
-    guard !navigationPaused, let parts = ScreenFrameSampler.snapshotParts(image) else { return }
+    let nextPosition = halfScreenLayout != nil && completed ? detectedPosition : displayedPosition
+    let nextMask = halfScreenLayout != nil && completed ? detectedMask : displayedMask
+    let positionChanged = nextPosition != displayedPosition || nextMask != displayedMask
+    guard navigationSource !== image || navigationSourceBadge != badge || navigationSourceUpdating != updating || positionChanged else { return }
+    guard !navigationPaused, var parts = ScreenFrameSampler.snapshotParts(image, halfScreen: halfScreenLayout != nil) else { return }
+    if halfScreenLayout != nil, let position = nextPosition, let mask = nextMask {
+      guard let visibleBox = PiPVisibleRegion.box(position: position, mask: mask),
+            let visible = ScreenFrameSampler.cropped(image, orientation: .up, box: visibleBox) else { return }
+      parts[position == .top ? 1 : 0] = visible
+    }
     var frames: [CVPixelBuffer] = []
     for (index, part) in parts.enumerated() {
       guard let scaled = try? ScreenFramePainter.paint(source: part, orientation: .up,
-        blocks: [], translations: [:], pageSize: CGSize(width: 960, height: 540), preserveLayout: true) else {
+        blocks: [], translations: [:], pageSize: navigationSize, preserveLayout: true) else {
         onState?("render_buffer_failed"); return
       }
       let frame = scaled.image
       decorateNavigationFrame(frame, index: index, total: parts.count, badge: badge, updating: updating)
       frames.append(frame)
     }
+    displayedPosition = nextPosition
+    displayedMask = nextMask
     navigationSource = image; navigationSourceBadge = badge; navigationSourceUpdating = updating
     presentNavigationFrames(frames, preservingPosition: !navigationFrames.isEmpty)
   }
@@ -99,30 +130,51 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
   private var navigationDuration: Double { Double(navigationPageCount) * SnapshotViewportPages.secondsPerPage }
 
   private func decorateNavigationFrame(_ frame: CVPixelBuffer, index: Int, total: Int, badge: String, updating: Bool) {
+    // Live PiP only gets a compact progress pill; the old image stays clear.
+    guard halfScreenLayout == nil || updating else { return }
+    let width = CVPixelBufferGetWidth(frame), height = CVPixelBufferGetHeight(frame)
+    let scale = CGFloat(width) / 960
     CVPixelBufferLockBaseAddress(frame, [])
-    if let context = CGContext(data: CVPixelBufferGetBaseAddress(frame), width: 960, height: 540,
+    if let context = CGContext(data: CVPixelBufferGetBaseAddress(frame), width: width, height: height,
       bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(frame), space: CGColorSpaceCreateDeviceRGB(),
       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
-      context.translateBy(x: 0, y: 540); context.scaleBy(x: 1, y: -1)
+      context.translateBy(x: 0, y: CGFloat(height)); context.scaleBy(x: 1, y: -1)
       UIGraphicsPushContext(context)
-      if updating {
-        context.setFillColor(UIColor(white: 0, alpha: 0.22).cgColor)
-        context.fill(CGRect(x: 0, y: 0, width: 960, height: 540))
-        context.setFillColor(UIColor(red: 0.07, green: 0.12, blue: 0.22, alpha: 0.97).cgColor)
-        context.fill(CGRect(x: 0, y: 0, width: 960, height: 108))
+      if halfScreenLayout != nil {
+        let label = progressLabel as NSString
+        let font = UIFont.systemFont(ofSize: 26 * scale, weight: .medium)
+        let textSize = label.size(withAttributes: [.font: font])
+        let pillHeight = 46 * scale
+        let pillWidth = textSize.width + 58 * scale
+        let pill = CGRect(x: CGFloat(width) - pillWidth - 16 * scale, y: 14 * scale,
+          width: pillWidth, height: pillHeight)
+        context.setFillColor(UIColor(white: 0.12, alpha: 0.82).cgColor)
+        context.addPath(UIBezierPath(roundedRect: pill, cornerRadius: pillHeight / 2).cgPath)
+        context.fillPath()
         context.setFillColor(UIColor.systemOrange.cgColor)
-        context.fillEllipse(in: CGRect(x: 24, y: 24, width: 18, height: 18))
-        (badge as NSString).draw(at: CGPoint(x: 60, y: 13), withAttributes: [
-        .font: UIFont.systemFont(ofSize: 32, weight: .bold), .foregroundColor: UIColor.white])
-        ("Показан предыдущий перевод • \(index + 1)/\(total)" as NSString).draw(at: CGPoint(x: 60, y: 60), withAttributes: [
-        .font: UIFont.systemFont(ofSize: 24), .foregroundColor: UIColor(white: 1, alpha: 0.8)])
+        context.fillEllipse(in: CGRect(x: pill.minX + 15 * scale, y: pill.midY - 5 * scale,
+          width: 10 * scale, height: 10 * scale))
+        label.draw(at: CGPoint(x: pill.minX + 35 * scale, y: pill.midY - textSize.height / 2),
+          withAttributes: [.font: font, .foregroundColor: UIColor.white])
+      } else if updating {
+        context.setFillColor(UIColor(white: 0, alpha: 0.22).cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(UIColor(red: 0.07, green: 0.12, blue: 0.22, alpha: 0.97).cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: min(CGFloat(height), 108 * scale)))
+        context.setFillColor(UIColor.systemOrange.cgColor)
+        context.fillEllipse(in: CGRect(x: 24 * scale, y: 24 * scale, width: 18 * scale, height: 18 * scale))
+        (badge as NSString).draw(at: CGPoint(x: 60 * scale, y: 13 * scale), withAttributes: [
+        .font: UIFont.systemFont(ofSize: 32 * scale, weight: .bold), .foregroundColor: UIColor.white])
+        ("Показан предыдущий перевод • \(index + 1)/\(total)" as NSString).draw(at: CGPoint(x: 60 * scale, y: 60 * scale), withAttributes: [
+        .font: UIFont.systemFont(ofSize: 24 * scale), .foregroundColor: UIColor(white: 1, alpha: 0.8)])
       } else {
-        let label = badge.isEmpty ? "\(index + 1)/\(total)" : "\(index + 1)/\(total) • \(badge)"
-        let size = (label as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 22, weight: .semibold)])
+        let part = halfScreenLayout == nil ? "\(index + 1)/\(total)" : index == 0 ? "Верхняя половина" : "Нижняя половина"
+        let label = badge.isEmpty ? part : "\(part) • \(badge)"
+        let size = (label as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 22 * scale, weight: .semibold)])
         context.setFillColor(UIColor(white: 1, alpha: 0.94).cgColor)
-        context.fill(CGRect(x: 8, y: 6, width: min(944, size.width + 20), height: 38))
-        (label as NSString).draw(at: CGPoint(x: 18, y: 12), withAttributes: [
-        .font: UIFont.systemFont(ofSize: 22, weight: .semibold), .foregroundColor: UIColor.darkGray])
+        context.fill(CGRect(x: 8 * scale, y: 6 * scale, width: min(CGFloat(width) - 16 * scale, size.width + 20 * scale), height: 38 * scale))
+        (label as NSString).draw(at: CGPoint(x: 18 * scale, y: 12 * scale), withAttributes: [
+        .font: UIFont.systemFont(ofSize: 22 * scale, weight: .semibold), .foregroundColor: UIColor.darkGray])
       }
       UIGraphicsPopContext()
     }
@@ -130,24 +182,26 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
   }
 
   func showNavigationDemo() {
+    let count = halfScreenLayout == nil ? 4 : 2
+    let width = Int(navigationSize.width), height = Int(navigationSize.height)
     var frames: [CVPixelBuffer] = []
-    for index in 0..<4 {
+    for index in 0..<count {
       var buffer: CVPixelBuffer?
-      guard CVPixelBufferCreate(nil, 960, 540, kCVPixelFormatType_32BGRA,
+      guard CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA,
         [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary, &buffer) == kCVReturnSuccess,
         let buffer else { onState?("render_buffer_failed"); return }
       CVPixelBufferLockBaseAddress(buffer, [])
-      guard let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: 960, height: 540,
+      guard let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height,
         bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
         CVPixelBufferUnlockBaseAddress(buffer, []); return
       }
       let colors: [UIColor] = [.systemBlue, .systemGreen, .systemOrange, .systemPurple]
-      context.setFillColor(colors[index].cgColor); context.fill(CGRect(x: 0, y: 0, width: 960, height: 540))
-      context.translateBy(x: 0, y: 540); context.scaleBy(x: 1, y: -1)
+      context.setFillColor(colors[index].cgColor); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+      context.translateBy(x: 0, y: CGFloat(height)); context.scaleBy(x: 1, y: -1)
       UIGraphicsPushContext(context)
-      let label = "ЧАСТЬ \(index + 1) ИЗ 4\n\(index * 15)–\((index + 1) * 15) секунд\nНазад / вперёд — соседняя часть"
-      (label as NSString).draw(in: CGRect(x: 45, y: 110, width: 870, height: 350), withAttributes: [
+      let label = "ЧАСТЬ \(index + 1) ИЗ \(count)\nНазад / вперёд — соседняя часть"
+      (label as NSString).draw(in: CGRect(x: 45, y: 110, width: max(1, width - 90), height: max(1, height - 150)), withAttributes: [
         .font: UIFont.systemFont(ofSize: 48, weight: .bold), .foregroundColor: UIColor.white])
       UIGraphicsPopContext(); CVPixelBufferUnlockBaseAddress(buffer, [])
       frames.append(buffer)
@@ -157,6 +211,26 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
 
   func presentNavigationFrames(_ frames: [CVPixelBuffer], preservingPosition: Bool = false) {
     guard !frames.isEmpty, frames.count <= 8 else { return }
+    if halfScreenLayout != nil {
+      navigationTimer?.invalidate(); navigationTimer = nil
+      navigationFrames = frames
+      navigationPaused = halfScreenPaused
+      navigationPage = displayedPosition == .top ? min(1, frames.count - 1) : 0
+      controller?.requiresLinearPlayback = true
+      enqueueGeneration += 1; pendingSample = nil; enqueueTask?.cancel(); enqueueTask = nil
+      receiver.flush()
+      synchronizer.setRate(halfScreenPaused ? 0 : 1, time: .zero)
+      enqueue(frames[navigationPage])
+      // Keep a live sample source while the translated image is unchanged.
+      // This repeats the same selected half; it never advances a page or OCR.
+      navigationTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        guard let self, !self.halfScreenPaused, self.navigationFrames.indices.contains(self.navigationPage) else { return }
+        self.enqueue(self.navigationFrames[self.navigationPage])
+      }
+      onNavigationChange?(navigationPage, frames.count)
+      controller?.invalidatePlaybackState()
+      return
+    }
     let oldTime = preservingPosition ? navigationSeconds() : 0
     navigationTimer?.invalidate()
     navigationFrames = frames; navigationPaused = false; navigationPage = -1
@@ -235,9 +309,11 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
   }
 
 
-  init(protectCapture: Bool = false, screenAspect: Bool = false) {
+  init(protectCapture: Bool = false, screenAspect: Bool = false, halfScreenLayout: HalfScreenPiPLayout? = nil) {
+    self.halfScreenLayout = halfScreenLayout
     super.init()
-    if screenAspect { contentWidth = 720; contentHeight = 1280 }
+    if let layout = halfScreenLayout { contentWidth = layout.width; contentHeight = layout.height }
+    else if screenAspect { contentWidth = 720; contentHeight = 1280 }
     layer.videoGravity = .resizeAspect
     layer.preventsCapture = protectCapture
     receiver = synchronizer.sampleBufferReceiver(adding: layer.sampleBufferRenderer)
@@ -278,6 +354,11 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
             "preventsCapture": layer.preventsCapture,
             "pendingFrames": pendingSample == nil ? 0 : 1, "enqueueInFlight": enqueueTask != nil,
             "videoWidth": contentWidth, "videoHeight": contentHeight,
+            "halfScreenMode": halfScreenLayout != nil,
+            "detectedPiPPosition": detectedPosition?.rawValue ?? "unknown",
+            "automaticPositionConfirmed": detectedPosition != nil,
+            "manualPaging": halfScreenLayout == nil,
+            "displayedHalf": navigationPage == 1 ? "bottom" : "top",
             "pipRenderWidth": pipRenderSize.width, "pipRenderHeight": pipRenderSize.height,
             "timebaseRate": CMTimebaseGetRate(synchronizer.timebase),
             "timelineSeconds": seconds.isFinite ? seconds : 0,
@@ -304,7 +385,8 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
       receiver.flush(); controller?.requiresLinearPlayback = true
       synchronizer.setRate(1, time: .zero); controller?.invalidatePlaybackState()
     }
-    let width = contentWidth, height = contentHeight
+    let width = halfScreenLayout?.width ?? contentWidth
+    let height = halfScreenLayout?.height ?? contentHeight
     var pixelBuffer: CVPixelBuffer?
     let attributes: [CFString: Any] = [kCVPixelBufferCGImageCompatibilityKey: true,
       kCVPixelBufferCGBitmapContextCompatibilityKey: true,
@@ -426,6 +508,13 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
   }
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) { completionHandler(false) }
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
+    if halfScreenLayout != nil {
+      halfScreenPaused = !playing; navigationPaused = !playing
+      synchronizer.setRate(playing ? 1 : 0, time: synchronizer.currentTime())
+      onNavigationPlaybackChange?(playing)
+      pictureInPictureController.invalidatePlaybackState()
+      return
+    }
     guard !navigationFrames.isEmpty else { if !playing { onClose?() }; return }
     var seconds = navigationSeconds()
     let restart = playing && seconds >= navigationDuration - 0.02
@@ -437,14 +526,14 @@ final class SampleBufferPiP: NSObject, AVPictureInPictureControllerDelegate, AVP
     onNavigationPlaybackChange?(playing)
   }
   func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {
-    guard !navigationFrames.isEmpty else { return CMTimeRange(start: .zero, duration: .positiveInfinity) }
+    guard halfScreenLayout == nil, !navigationFrames.isEmpty else { return CMTimeRange(start: .zero, duration: .positiveInfinity) }
     _ = navigationSeconds()
     return CMTimeRange(start: .zero, duration: CMTime(seconds: navigationDuration, preferredTimescale: 600))
   }
-  func pictureInPictureControllerIsPlaybackPaused(_ pictureInPictureController: AVPictureInPictureController) -> Bool { if !navigationFrames.isEmpty { _ = navigationSeconds(); return navigationPaused }; return false }
+  func pictureInPictureControllerIsPlaybackPaused(_ pictureInPictureController: AVPictureInPictureController) -> Bool { if halfScreenLayout != nil { return halfScreenPaused }; if !navigationFrames.isEmpty { _ = navigationSeconds(); return navigationPaused }; return false }
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, didTransitionToRenderSize newRenderSize: CMVideoDimensions) { pipRenderSize = newRenderSize }
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, skipByInterval skipInterval: CMTime, completion completionHandler: @escaping () -> Void) {
-    guard !navigationFrames.isEmpty else { completionHandler(); return }
+    guard halfScreenLayout == nil, !navigationFrames.isEmpty else { completionHandler(); return }
     let interval = skipInterval.seconds
     guard interval.isFinite else { completionHandler(); return }
     guard interval != 0 else { completionHandler(); return }

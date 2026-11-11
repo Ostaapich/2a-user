@@ -5,6 +5,7 @@ import '../../../core/ui/app_colors.dart';
 import '../../tracks/presentation/widgets/track_sheet_surface.dart';
 import '../../../core/utils/locale_text.dart';
 import '../data/invoice_payment_options.dart';
+import '../data/invoice_payment_method_drafts.dart';
 
 String invoicePaymentMethodLabel(
   BuildContext context,
@@ -29,9 +30,9 @@ String invoicePaymentMethodLabel(
   'manager' => tr(
     context,
     ru: action
-        ? 'Оплатить картой нероссийского банка'
+        ? 'Оплатить рублями картой нероссийского банка'
         : 'Карта нероссийского банка',
-    zh: action ? '使用非俄罗斯银行卡支付' : '非俄罗斯银行卡',
+    zh: action ? '使用非俄罗斯银行卡以卢布支付' : '非俄罗斯银行卡',
   ),
   _ => method,
 };
@@ -50,14 +51,21 @@ class _InvoicePaymentMethodSheetState
   bool _loading = true;
   bool _selecting = false;
   bool _error = false;
+  String? _selectedMethod;
+  late final InvoicePaymentMethodDrafts _drafts;
+
+  bool get _sameOwner =>
+      identical(ref.read(invoicePaymentMethodDraftsProvider), _drafts);
 
   @override
   void initState() {
     super.initState();
+    _drafts = ref.read(invoicePaymentMethodDraftsProvider);
     _load();
   }
 
   Future<void> _load() async {
+    if (!_sameOwner) return;
     setState(() {
       _loading = true;
       _error = false;
@@ -66,13 +74,24 @@ class _InvoicePaymentMethodSheetState
       final value = await ref
           .read(invoicePaymentOptionsServiceProvider)
           .fetch(widget.invoiceId);
-      if (!mounted) return;
+      if (!mounted || !_sameOwner) return;
+      final available = value.methods
+          .where((method) => method.available)
+          .map((method) => method.code)
+          .toSet();
+      final draft = _drafts.selected(widget.invoiceId);
+      final selected = available.contains(draft)
+          ? draft
+          : available.contains(value.activeMethod)
+          ? value.activeMethod
+          : null;
       setState(() {
+        _selectedMethod = selected;
         _options = value;
         _loading = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || !_sameOwner) return;
       setState(() {
         _error = true;
         _loading = false;
@@ -81,7 +100,15 @@ class _InvoicePaymentMethodSheetState
   }
 
   Future<void> _select(String method) async {
-    if (_selecting || _options?.canChange != true) return;
+    if (_selecting ||
+        !_sameOwner ||
+        !_drafts.enabled ||
+        _options?.canChange != true ||
+        !_options!.methods.any(
+          (value) => value.code == method && value.available,
+        )) {
+      return;
+    }
     setState(() {
       _selecting = true;
       _error = false;
@@ -90,13 +117,13 @@ class _InvoicePaymentMethodSheetState
       final value = await ref
           .read(invoicePaymentOptionsServiceProvider)
           .select(widget.invoiceId, method);
-      if (!mounted) return;
+      if (!mounted || !_sameOwner) return;
       Navigator.of(context).pop(value);
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || !_sameOwner) return;
       // Re-read the authoritative lock after e.g. a receipt submitted elsewhere.
       await _load();
-      if (!mounted) return;
+      if (!mounted || !_sameOwner) return;
       setState(() {
         _selecting = false;
         _error = true;
@@ -107,6 +134,17 @@ class _InvoicePaymentMethodSheetState
   @override
   Widget build(BuildContext context) {
     final options = _options;
+    final sameOwner = identical(
+      ref.watch(invoicePaymentMethodDraftsProvider),
+      _drafts,
+    );
+    final canPay =
+        sameOwner &&
+        _drafts.enabled &&
+        !_loading &&
+        !_selecting &&
+        options?.canChange == true &&
+        _selectedMethod != null;
     return TrackSheetSurface(
       icon: Icons.account_balance_wallet_rounded,
       title: tr(context, ru: 'Способ оплаты', zh: '付款方式'),
@@ -116,14 +154,22 @@ class _InvoicePaymentMethodSheetState
         zh: '请选择付款方式',
       ),
       footer: TrackSheetPrimaryButton(
-        label: tr(context, ru: 'Закрыть', zh: '关闭'),
-        icon: Icons.close_rounded,
-        onTap: _selecting ? null : () => Navigator.of(context).pop(),
+        label: tr(context, ru: 'Оплатить', zh: '支付'),
+        icon: Icons.payment_rounded,
+        onTap: canPay ? () => _select(_selectedMethod!) : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (_loading)
+          if (!sameOwner)
+            Text(
+              tr(
+                context,
+                ru: 'Выбранный клиент изменился. Откройте оплату заново.',
+                zh: '当前客户已更改，请重新打开付款。',
+              ),
+            )
+          else if (_loading)
             const Padding(
               padding: EdgeInsets.all(24),
               child: Center(child: CircularProgressIndicator()),
@@ -200,22 +246,27 @@ class _InvoicePaymentMethodSheetState
                               ? '暂无有效汇率'
                               : '暂不可用',
                         )
-                      : options.activeMethod == method.code
+                      : _selectedMethod == method.code
                       ? tr(context, ru: 'Выбранный способ', zh: '已选方式')
                       : invoicePaymentMethodLabel(
                           context,
                           method.code,
                           action: false,
                         ),
-                  selected: options.activeMethod == method.code,
-                  onTap: method.available && !_selecting
-                      ? () => _select(method.code)
+                  selected: _selectedMethod == method.code,
+                  radioIndicator: true,
+                  onTap: method.available && !_selecting && _drafts.enabled
+                      ? () {
+                          _drafts.select(widget.invoiceId, method.code);
+                          setState(() => _selectedMethod = method.code);
+                        }
                       : null,
                 ),
               ),
           ],
-          if (_selecting) const Center(child: CircularProgressIndicator()),
-          if (_error) ...[
+          if (_selecting && sameOwner)
+            const Center(child: CircularProgressIndicator()),
+          if (_error && sameOwner) ...[
             const SizedBox(height: 12),
             Text(
               tr(

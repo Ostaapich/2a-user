@@ -1,3 +1,6 @@
+import '../../../core/ui/app_search_field.dart';
+import '../../../core/utils/locale_text.dart';
+import '../../tracks/data/tracks_provider.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -131,17 +134,12 @@ class _SpOrganizerTrackImportSheetState
             subtitle: 'Ищите по трек-номеру или названию товара.',
           ),
           const SizedBox(height: 9),
-          TextField(
+          AppSearchField(
             key: const ValueKey('track-import-search'),
             controller: _searchController,
             onChanged: _onSearchChanged,
             textInputAction: TextInputAction.search,
-            decoration: SpFinanceUi.inputDecoration(
-              context,
-              labelText: 'Поиск по трекам',
-              hintText: 'Например, 773… или «куртка»',
-              prefixIcon: Icons.search_rounded,
-            ),
+            hintText: 'Например, 773… или «куртка»',
           ),
           const SizedBox(height: 12),
           if (_loading)
@@ -362,7 +360,7 @@ class _ImportStepTitle extends StatelessWidget {
   }
 }
 
-class _TrackImportCandidateTile extends StatelessWidget {
+class _TrackImportCandidateTile extends ConsumerWidget {
   final SpOrganizerTrackImportCandidate candidate;
   final bool selected;
   final bool linkedToSelectedCustomer;
@@ -376,8 +374,18 @@ class _TrackImportCandidateTile extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final photoUrl = candidate.primaryPhotoUrl;
+    final statuses =
+        ref.watch(trackStatusesProvider).asData?.value ?? const <TrackStatus>[];
+    final metadata = statuses
+        .where((s) => s.code == candidate.status)
+        .firstOrNull;
+    final statusText = metadata == null
+        ? tr(context, ru: 'Статус уточняется', zh: '状态待更新')
+        : isZh(context)
+        ? metadata.nameZh ?? metadata.nameRu
+        : metadata.nameRu;
     return Material(
       color: selected
           ? context.brandPrimary.withValues(alpha: 0.08)
@@ -469,7 +477,7 @@ class _TrackImportCandidateTile extends StatelessWidget {
                         if (candidate.clientCode.isNotEmpty)
                           _TrackMetaChip(label: candidate.clientCode),
                         if (candidate.status.isNotEmpty)
-                          _TrackMetaChip(label: candidate.status),
+                          _TrackMetaChip(label: statusText),
                         if (linkedToSelectedCustomer)
                           const _TrackMetaChip(
                             label: 'Уже у участника',

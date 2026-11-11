@@ -125,10 +125,20 @@ void main() {
       expect(find.byKey(const Key('training-show-in-app')), findsNothing);
       expect(find.byKey(const Key('training-practice')), findsOneWidget);
       final context = tester.element(find.byType(TrainingEntryScreen));
+      expect(
+        MediaQuery.paddingOf(context).top,
+        0,
+        reason: 'AppScaffold has already consumed the safe top inset',
+      );
       final firstAction = find.byKey(const Key('training-catalog'));
       expect(
         tester.getTopLeft(firstAction).dy,
-        closeTo(AppLayout.topBarTotalHeight(context) + 16, 1),
+        closeTo(
+          MediaQuery.paddingOf(tester.element(find.byType(AppScaffold))).top +
+              AppLayout.topBarTotalHeight(context) +
+              16,
+          1,
+        ),
       );
       final output = Platform.environment['TRAINING_RENDER_DIR'];
       if (output != null) {

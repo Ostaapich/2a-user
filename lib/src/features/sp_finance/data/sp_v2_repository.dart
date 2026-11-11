@@ -380,6 +380,36 @@ class SpV2Repository {
     return SpV2Payment.fromJson(response.data as Map<String, dynamic>);
   }
 
+  Future<void> setCustomerItemsPayment(
+    int customerId, {
+    required int purchaseId,
+    required String type,
+    required bool paid,
+    required List<({int id, DateTime expectedUpdatedAt, double? amountRub})>
+    items,
+  }) async {
+    await _apiClient.patch(
+      '/client/sp-v2/customers/$customerId/payment',
+      data: {
+        'purchaseId': purchaseId,
+        'type': type,
+        'paid': paid,
+        'items': items
+            .map(
+              (item) => {
+                'id': item.id,
+                'expectedUpdatedAt': item.expectedUpdatedAt
+                    .toUtc()
+                    .toIso8601String(),
+                if (item.amountRub != null)
+                  'amountRub': double.parse(item.amountRub!.toStringAsFixed(2)),
+              },
+            )
+            .toList(growable: false),
+      },
+    );
+  }
+
   Future<String?> uploadMedia({
     required Uint8List bytes,
     required String fileName,

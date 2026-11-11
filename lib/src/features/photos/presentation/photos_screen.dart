@@ -1,18 +1,23 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import '../../training/presentation/training_target.dart';
 import '../../../core/ui/app_colors.dart';
+import '../../../core/ui/app_input_decoration.dart';
 import '../../../core/ui/app_cached_media_image.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/scroll_to_top_button.dart';
 import '../../../core/ui/empty_state.dart';
 import '../../../core/ui/tutorial_card.dart';
 import '../../../core/utils/error_utils.dart';
+import '../../../core/utils/locale_text.dart';
 import '../../clients/application/client_codes_controller.dart';
 import '../data/photos_provider.dart';
 import '../domain/photo_item.dart';
 import 'photo_report_video_badge.dart';
+import 'photo_date_sheet.dart';
 import 'photo_viewer_screen.dart';
 
 class PhotosScreen extends ConsumerStatefulWidget {
@@ -25,6 +30,10 @@ class PhotosScreen extends ConsumerStatefulWidget {
 class _PhotosScreenState extends ConsumerState<PhotosScreen> {
   final ScrollController _scrollController = ScrollController();
   PaginatedPhotosNotifier? _photosNotifier;
+  final _searchController = TextEditingController();
+  Timer? _searchDebounce;
+  String _search = '';
+  DateTime? _date;
 
   final GlobalKey _statsKey = GlobalKey();
   final GlobalKey _photoGridKey = GlobalKey();
@@ -37,6 +46,8 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _photosNotifier?.removeListener(_onPhotosChanged);
@@ -51,7 +62,7 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
     if (pos.pixels >= pos.maxScrollExtent * 0.9) {
-      _photosNotifier?.loadMore();
+      if (_photosNotifier?.state.error == null) _photosNotifier?.loadMore();
     }
   }
 
@@ -70,7 +81,13 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     // Держим WebSocket-подписку для фонового обновления фото без перезагрузки экрана.
     ref.watch(photosRealtimeBridgeProvider);
 
-    final newNotifier = ref.watch(paginatedPhotosProvider(clientCode));
+    final newNotifier = ref.watch(
+      filteredPhotosProvider((
+        clientCode: clientCode,
+        date: _date == null ? null : DateFormat('yyyy-MM-dd').format(_date!),
+        search: _search,
+      )),
+    );
     if (_photosNotifier != newNotifier) {
       _photosNotifier?.removeListener(_onPhotosChanged);
       _photosNotifier = newNotifier;
@@ -126,6 +143,203 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
                           key: _statsKey,
                           child: const _PhotosHeaderSection(),
                         ),
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(22),
+                            border: Border.all(
+                              color: Colors.black.withValues(alpha: 0.045),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.045),
+                                blurRadius: 18,
+                                spreadRadius: -9,
+                                offset: const Offset(0, 12),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: AppOutlinedInputFrame(
+                                      height: 48,
+                                      radius: 16,
+                                      fillColor: const Color(0xFFF8FAFC),
+                                      borderColor: const Color(0xFFE3E7EE),
+                                      builder: (context, focusNode) =>
+                                          TextField(
+                                            focusNode: focusNode,
+                                            controller: _searchController,
+                                            style: const TextStyle(
+                                              fontFamily: 'Gilroy',
+                                              fontSize: 14.5,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppColors.textPrimary,
+                                            ),
+                                            decoration: InputDecoration(
+                                              hintText: tr(
+                                                context,
+                                                ru: 'Поиск по трек-номеру',
+                                                zh: '按运单号搜索',
+                                              ),
+                                              hintStyle: const TextStyle(
+                                                fontFamily: 'Gilroy',
+                                                fontSize: 14.5,
+                                                fontWeight: FontWeight.w600,
+                                                color: AppColors.textSecondary,
+                                              ),
+                                              prefixIcon: focusNode.hasFocus
+                                                  ? null
+                                                  : Icon(
+                                                      Icons.search_rounded,
+                                                      color:
+                                                          context.brandPrimary,
+                                                      size: 22,
+                                                    ),
+                                              suffixIcon:
+                                                  _searchController.text.isEmpty
+                                                  ? null
+                                                  : IconButton(
+                                                      tooltip: tr(
+                                                        context,
+                                                        ru: 'Очистить поиск',
+                                                        zh: '清除搜索',
+                                                      ),
+                                                      icon: const Icon(
+                                                        Icons.close_rounded,
+                                                        size: 20,
+                                                        color: AppColors
+                                                            .textSecondary,
+                                                      ),
+                                                      onPressed: () {
+                                                        _searchDebounce
+                                                            ?.cancel();
+                                                        _searchController
+                                                            .clear();
+                                                        setState(
+                                                          () => _search = '',
+                                                        );
+                                                      },
+                                                    ),
+                                              border: InputBorder.none,
+                                              contentPadding:
+                                                  EdgeInsets.fromLTRB(
+                                                    focusNode.hasFocus ? 16 : 0,
+                                                    14,
+                                                    12,
+                                                    14,
+                                                  ),
+                                              isDense: true,
+                                            ),
+                                            onChanged: (value) {
+                                              setState(() {});
+                                              _searchDebounce?.cancel();
+                                              _searchDebounce = Timer(
+                                                const Duration(
+                                                  milliseconds: 350,
+                                                ),
+                                                () {
+                                                  if (!mounted) return;
+                                                  setState(
+                                                    () =>
+                                                        _search = value.trim(),
+                                                  );
+                                                },
+                                              );
+                                            },
+                                          ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Tooltip(
+                                    message: tr(
+                                      context,
+                                      ru: 'Выбрать дату',
+                                      zh: '选择日期',
+                                    ),
+                                    child: Material(
+                                      color: _date == null
+                                          ? const Color(0xFFF8FAFC)
+                                          : context.brandPrimary.withValues(
+                                              alpha: 0.10,
+                                            ),
+                                      borderRadius: BorderRadius.circular(16),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(16),
+                                        onTap: () async {
+                                          final date = await showPhotoDateSheet(
+                                            context: context,
+                                            initialDate:
+                                                _date ?? DateTime.now(),
+                                            firstDate: DateTime(2015),
+                                            lastDate: DateTime.now(),
+                                          );
+                                          if (!mounted || date == null) return;
+                                          setState(() => _date = date);
+                                        },
+                                        child: Container(
+                                          width: 48,
+                                          height: 48,
+                                          decoration: BoxDecoration(
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
+                                            border: Border.all(
+                                              color: _date == null
+                                                  ? Colors.black.withValues(
+                                                      alpha: 0.035,
+                                                    )
+                                                  : context.brandPrimary
+                                                        .withValues(
+                                                          alpha: 0.18,
+                                                        ),
+                                            ),
+                                          ),
+                                          child: Icon(
+                                            Icons.calendar_month_rounded,
+                                            size: 21,
+                                            color: _date == null
+                                                ? AppColors.textSecondary
+                                                : context.brandPrimary,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (_date != null) ...[
+                                const SizedBox(height: 8),
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: InputChip(
+                                    label: Text(
+                                      DateFormat('dd.MM.yyyy').format(_date!),
+                                    ),
+                                    avatar: Icon(
+                                      Icons.calendar_month_rounded,
+                                      size: 16,
+                                      color: context.brandPrimary,
+                                    ),
+                                    deleteButtonTooltipMessage: tr(
+                                      context,
+                                      ru: 'Сбросить дату',
+                                      zh: '清除日期',
+                                    ),
+                                    onDeleted: () =>
+                                        setState(() => _date = null),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
                         const SizedBox(height: 16),
                       ],
                     ),
@@ -134,15 +348,13 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
                 ..._buildPhotosSlivers(
                   context,
                   photosState,
-                  onRetry: () => _photosNotifier?.loadInitial(),
+                  refreshFailed: newNotifier.failedInitialLoad,
+                  onRetry: () => newNotifier.retryFailedLoad(),
                 ),
                 SliverToBoxAdapter(child: SizedBox(height: bottomPad + 16)),
               ],
             ),
-            ScrollToTopButton(
-              controller: _scrollController,
-              bottomOffset: AppLayout.bottomBarObstruction(context) + 24,
-            ),
+            ScrollToTopButton(controller: _scrollController),
           ],
         ),
       ),
@@ -156,6 +368,7 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     BuildContext context,
     PaginatedPhotosState state, {
     required VoidCallback onRetry,
+    bool refreshFailed = false,
   }) {
     if (state.isLoading && state.photos.isEmpty) {
       return [
@@ -247,12 +460,9 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
                             builder: (_) => PhotoViewerScreen(
                               item: item.reportVideos.first,
                               allPhotos: gallery,
-                              initialIndex: gallery.indexWhere(
-                                (entry) =>
-                                    item.reportVideos.first.videoId != null
-                                    ? entry.videoId ==
-                                          item.reportVideos.first.videoId
-                                    : entry.url == item.reportVideos.first.url,
+                              initialIndex: photoReportGalleryIndex(
+                                gallery,
+                                item.reportVideos.first,
                               ),
                             ),
                           ),
@@ -264,7 +474,10 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
                             builder: (_) => PhotoViewerScreen(
                               item: item,
                               allPhotos: gallery,
-                              initialIndex: gallery.indexOf(item),
+                              initialIndex: photoReportGalleryIndex(
+                                gallery,
+                                item,
+                              ),
                             ),
                           ),
                         ),
@@ -298,6 +511,27 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
         ),
     ]);
 
+    if (state.error != null) {
+      slivers.add(
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: _PhotosErrorState(
+              message: tr(
+                context,
+                ru: refreshFailed
+                    ? 'Не удалось обновить фотографии. Ранее загруженные снимки доступны.'
+                    : 'Не удалось загрузить следующие фотографии. Уже загруженные снимки доступны.',
+                zh: refreshFailed
+                    ? '无法刷新照片，先前加载的照片仍然可用。'
+                    : '无法加载更多照片，已加载的照片仍然可用。',
+              ),
+              onRetry: onRetry,
+            ),
+          ),
+        ),
+      );
+    }
     return slivers;
   }
 
@@ -874,7 +1108,7 @@ class _PhotosEndCard extends StatelessWidget {
             Icon(Icons.done_all_rounded, color: context.brandPrimary, size: 16),
             const SizedBox(width: 7),
             Text(
-              'Все фото загружены ($count)',
+              'Все материалы загружены ($count)',
               style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontFamily: 'Gilroy',

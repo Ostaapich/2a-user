@@ -352,16 +352,42 @@ class _DeliveryTariffCard extends StatelessWidget {
                 pricePerM3: densityBased
                     ? tariff.minimumDensityPricePerM3
                     : null,
-                showFrom: densityBased,
+                showFrom: true,
               ),
             ],
           ),
-          if (densityBased) ...[
-            const SizedBox(height: 14),
-            _DensityTiersBlock(tiers: tariff.densityTiers),
-          ] else if (hasTiers) ...[
-            const SizedBox(height: 14),
-            _WeightTiersBlock(tiers: tariff.weightTiers),
+          if (hasTiers || densityBased) ...[
+            const SizedBox(height: 12),
+            Container(
+              decoration: TariffsUi.softDecoration(),
+              child: Material(
+                color: Colors.transparent,
+                child: ExpansionTile(
+                  tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+                  shape: const Border(),
+                  collapsedShape: const Border(),
+                  backgroundColor: Colors.transparent,
+                  collapsedBackgroundColor: Colors.transparent,
+                  iconColor: context.brandPrimary,
+                  collapsedIconColor: context.brandPrimary,
+                  title: Text(
+                    tr(context, ru: 'Диапазоны и ставки', zh: '区间及费率'),
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontFamily: 'Gilroy',
+                      fontSize: 14,
+                      height: 17 / 14,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  children: [
+                    densityBased
+                        ? _DensityTiersBlock(tiers: tariff.densityTiers)
+                        : _WeightTiersBlock(tiers: tariff.weightTiers),
+                  ],
+                ),
+              ),
+            ),
           ],
           if (hasAllowed || hasProhibited) ...[
             const SizedBox(height: 12),
@@ -529,8 +555,8 @@ class _WeightTiersBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: TariffsUi.softDecoration(),
+    final weightUnit = tr(context, ru: 'кг', zh: 'kg');
+    return Padding(
       padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -539,10 +565,10 @@ class _WeightTiersBlock extends StatelessWidget {
             children: [
               Icon(Icons.scale_rounded, color: context.brandPrimary, size: 18),
               const SizedBox(width: 7),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Весовые диапазоны',
-                  style: TextStyle(
+                  tr(context, ru: 'Весовые диапазоны', zh: '重量区间'),
+                  style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontFamily: 'Gilroy',
                     fontSize: 14,
@@ -557,9 +583,13 @@ class _WeightTiersBlock extends StatelessWidget {
           for (var i = 0; i < tiers.length; i++) ...[
             _ValueRow(
               label: tiers[i].maxWeight != null
-                  ? '${_fmt(tiers[i].minWeight)} – ${_fmt(tiers[i].maxWeight!)} кг'
-                  : 'от ${_fmt(tiers[i].minWeight)} кг',
-              value: '\$${_fmt(tiers[i].pricePerKg)} / кг',
+                  ? '${_fmt(tiers[i].minWeight)} – ${_fmt(tiers[i].maxWeight!)} $weightUnit'
+                  : tr(
+                      context,
+                      ru: 'от ${_fmt(tiers[i].minWeight)} $weightUnit',
+                      zh: '${_fmt(tiers[i].minWeight)} $weightUnit 起',
+                    ),
+              value: '\$${_fmt(tiers[i].pricePerKg)} / $weightUnit',
             ),
             if (i != tiers.length - 1) const SizedBox(height: 8),
           ],
@@ -577,8 +607,7 @@ class _DensityTiersBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final densityUnit = tr(context, ru: 'кг/м³', zh: 'kg/m³');
-    return Container(
-      decoration: TariffsUi.softDecoration(),
+    return Padding(
       padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

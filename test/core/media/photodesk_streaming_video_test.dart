@@ -49,6 +49,7 @@ void main() {
         controller.httpHeaders['Authorization'],
         'Bearer private-account-token',
       );
+      expect(controller.httpHeaders['X-Warehouse-Protocol'], isNull);
       expect(controller.dataSource, contains('/api/uploads/photodesk-videos/'));
       expect(controller.dataSource, isNot(contains('private-account-token')));
       expect(api.downloads, 0);

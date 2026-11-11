@@ -19,6 +19,16 @@ const paymentReceiptAllowedExtensions = <String>[
   'pdf',
 ];
 
+const paymentReceiptMaxBytes = 15 * 1024 * 1024;
+
+class PaymentReceiptTooLarge implements Exception {
+  const PaymentReceiptTooLarge();
+}
+
+void validatePaymentReceiptSize(int bytes) {
+  if (bytes > paymentReceiptMaxBytes) throw const PaymentReceiptTooLarge();
+}
+
 enum _PaymentReceiptSource { gallery, files }
 
 class PaymentReceiptSelection {
@@ -116,8 +126,8 @@ Future<PaymentReceiptSelection?> pickPaymentReceipt(
               title: tr(sheetContext, ru: 'Файлы', zh: '文件'),
               subtitle: tr(
                 sheetContext,
-                ru: 'Изображение или PDF-документ',
-                zh: '图片或 PDF 文档',
+                ru: 'Изображение или PDF · до 15 МБ',
+                zh: '图片或 PDF · 最大 15 MB',
               ),
               onTap: () =>
                   Navigator.of(sheetContext).pop(_PaymentReceiptSource.files),
@@ -136,6 +146,7 @@ Future<PaymentReceiptSelection?> pickPaymentReceipt(
       _PaymentReceiptSource.files => await _pickReceiptFromFiles(),
     };
     if (!context.mounted || selection == null) return null;
+    validatePaymentReceiptSize(selection.bytes.length);
     if (selection.bytes.isEmpty) {
       AppToast.show(
         context,
@@ -145,6 +156,19 @@ Future<PaymentReceiptSelection?> pickPaymentReceipt(
       return null;
     }
     return selection;
+  } on PaymentReceiptTooLarge {
+    if (context.mounted) {
+      AppToast.show(
+        context,
+        tr(
+          context,
+          ru: 'Чек больше 15 МБ. Уменьшите изображение или размер PDF и выберите файл снова.',
+          zh: '凭证超过 15 MB，请缩小图片或 PDF 后重新选择。',
+        ),
+        isError: true,
+      );
+    }
+    return null;
   } on UnsupportedError {
     if (context.mounted) {
       AppToast.show(
@@ -172,6 +196,7 @@ Future<PaymentReceiptSelection?> _pickReceiptFromGallery() async {
     requestFullMetadata: false,
   );
   if (picked == null) return null;
+  validatePaymentReceiptSize(await picked.length());
 
   var fileName = picked.name.trim();
   var extension = paymentReceiptExtension(fileName);
@@ -204,11 +229,12 @@ Future<PaymentReceiptSelection?> _pickReceiptFromFiles() async {
   final result = await FilePicker.platform.pickFiles(
     type: FileType.custom,
     allowedExtensions: paymentReceiptAllowedExtensions,
-    withData: true,
+    withData: false,
   );
   if (result == null || result.files.isEmpty) return null;
 
   final file = result.files.first;
+  validatePaymentReceiptSize(file.size);
   final extension = paymentReceiptExtension(
     file.name,
     explicitExtension: file.extension,

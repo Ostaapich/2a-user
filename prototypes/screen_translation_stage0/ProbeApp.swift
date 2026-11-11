@@ -36,6 +36,7 @@ final class ProbeModel: ObservableObject {
   @Published var untranslatedBlockIDs: Set<String> = []
   @Published var unplacedBlockCount = 0
   private var failureReasonCounts: [String: Int] = [:]
+  private var piPPositionDiagnostics: [String: Any] = [:]
   var onUnauthorized: (() -> Void)?
   private var liveClientFactory: (() -> ScreenTranslationClient?)?
   private var liveClient: ScreenTranslationClient?
@@ -55,7 +56,8 @@ final class ProbeModel: ObservableObject {
   private var ocrRegionArea: Double = 1
   private var renderedOCRFrameID: UInt64 = 0
   @Published var qaState = "off"
-  @Published private(set) var pip = SampleBufferPiP()
+  @Published private(set) var pip: SampleBufferPiP
+  private let halfScreenLayout: HalfScreenPiPLayout?
   private let gate = SessionGate()
   private var capture: CaptureSource?
   private var observers: [NSObjectProtocol] = []
@@ -71,7 +73,9 @@ final class ProbeModel: ObservableObject {
   private var mediaPlayback: PiPMediaPlaybackLease?
   #endif
 
-  init() {
+  init(halfScreenLayout: HalfScreenPiPLayout? = nil) {
+    self.halfScreenLayout = halfScreenLayout
+    self.pip = SampleBufferPiP(halfScreenLayout: halfScreenLayout)
     // Remove the explicitly authorized one-block QA sample from the previous build.
     let oldQASample = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
       .appendingPathComponent("ScreenTranslationSingleBlockQA.json")
@@ -183,12 +187,15 @@ final class ProbeModel: ObservableObject {
       return
     }
     #endif
-    let sessionPiP = SampleBufferPiP(protectCapture: enableOCR || protectPiP, screenAspect: enableOCR && visualScreen && liveClientFactory == nil)
+    let sessionPiP = SampleBufferPiP(protectCapture: enableOCR || protectPiP, screenAspect: enableOCR && visualScreen && liveClientFactory == nil, halfScreenLayout: halfScreenLayout)
     pip = sessionPiP
     sessionPiP.onState = { [weak self] state in
       guard let self, self.gate.isCurrent(token) else { return }
       self.state = state
-      if state == "pip_active" { self.cancelAutomaticPiPDeadline() }
+      if state == "pip_active" {
+        self.cancelAutomaticPiPDeadline()
+        self.capture?.setPiPActive(true)
+      }
       self.recordDiagnostics()
       if state == "pip_active" && self.recordQA { self.capture?.scheduleQARecording() }
       if state != "pip_active" && state != "pip_not_ready" { self.stop(reason: state) }
@@ -256,8 +263,15 @@ final class ProbeModel: ObservableObject {
     }
     ocr?.setAppForeground(UIApplication.shared.applicationState != .background)
     captureStyle = "not_selected"
-    capture = CaptureSource(token: token, gate: gate, ocr: ocr, captureWindow: captureWindow,
-      sourceStyle: { [weak self] token, style in
+    capture = CaptureSource(token: token, gate: gate, ocr: ocr, captureWindow: captureWindow, halfScreenLayout: halfScreenLayout,
+      positionChanged: { [weak self] token, position, mask in
+        guard let self, self.gate.isCurrent(token) else { return }
+        self.pip.setDetectedPosition(position, mask: mask)
+        self.recordDiagnostics()
+      }, positionDiagnostics: { [weak self] token, diagnostic in
+        guard let self, self.gate.isCurrent(token) else { return }
+        self.piPPositionDiagnostics = diagnostic
+      }, sourceStyle: { [weak self] token, style in
         guard let self, self.gate.isCurrent(token) else { return }
         self.captureStyle = style; self.recordDiagnostics()
       }, video: { [weak self] token, count, width, height in
@@ -372,7 +386,8 @@ final class ProbeModel: ObservableObject {
       let failed = ["translation_failed", "translation_timeout", "no_network", "unauthorized", "rate_limited"].contains(ocrState)
       let badge = pending ? (ocrState == "waiting_stability" ? "Фиксируем новый экран…" : ocrState == "recognizing" ? "Распознаём новый экран…" : "Переводим новый экран…") : failed ? "Не удалось перевести • повторите в 2A" : ocrState == "layout_partial" ? "Не все подписи поместились • повторите в 2A" : ocrState == "translated_partial" ? "Без перевода: \(untranslatedBlockIDs.count) • повтор в 2A" : nil
       if liveClientFactory != nil && !navigationTest {
-        pip.renderNavigationSnapshot(image, previous: previousScreen || pending || failed, badgeText: badge, updating: pending)
+        pip.renderNavigationSnapshot(image, previous: previousScreen || pending || failed, badgeText: badge, updating: pending,
+          completed: !previousScreen && ["translated", "translated_partial", "layout_partial", "no_text"].contains(ocrState))
       } else { pip.renderScreen(image, previous: previousScreen || pending || failed, badgeText: badge) }
     } else {
       pip.render(videoCount: videoCount, background: UIApplication.shared.applicationState == .background,
@@ -406,7 +421,7 @@ final class ProbeModel: ObservableObject {
       "sessionId": sessionId,
       "videoCallbacks": videoCount, "dimensions": dimensions,
       "sessionElapsedMs": sessionStartedAtUptime.map { max(0, (ProcessInfo.processInfo.systemUptime - $0) * 1000) } ?? 0, "pip": pip.diagnostics,
-      "pipBeforeStop": lastStopPiP,
+      "pipBeforeStop": lastStopPiP, "piPPositionDetector": piPPositionDiagnostics,
       "backgroundModes": Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] ?? [],
       "pid": ProcessInfo.processInfo.processIdentifier,
       "appState": UIApplication.shared.applicationState.rawValue,

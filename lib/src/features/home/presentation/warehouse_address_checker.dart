@@ -1,10 +1,13 @@
 import '../../training/presentation/training_target.dart';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/ui/app_colors.dart';
+import '../../../core/ui/app_toast.dart';
+import '../../../core/utils/locale_text.dart';
 import '../../../core/ui/blurred_modal_bottom_sheet.dart';
 
 class WarehouseAddressCheckData {
@@ -472,33 +475,84 @@ class NativeWarehouseScreenshotTextRecognizer
   }
 }
 
+final _warehouseScreenshotPickers = Expando<bool>();
+
+Future<XFile?> _pickWarehouseScreenshot() =>
+    ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 100);
+
 Future<void> showWarehouseAddressChecker(
   BuildContext context, {
   required WarehouseAddressCheckData expected,
   WarehouseScreenshotTextRecognizer recognizer =
       const NativeWarehouseScreenshotTextRecognizer(),
-}) {
-  return showBlurredModalBottomSheet<void>(
-    context: context,
-    useRootNavigator: true,
-    useSafeArea: true,
-    isScrollControlled: true,
-    backgroundColor: Colors.transparent,
-    builder: (_) => WarehouseAddressCheckerSheet(
-      expected: expected,
-      recognizer: recognizer,
-    ),
-  );
+  Future<XFile?> Function()? screenshotPicker,
+}) async {
+  final navigator = Navigator.of(context, rootNavigator: true);
+  if (_warehouseScreenshotPickers[navigator] == true) return;
+  _warehouseScreenshotPickers[navigator] = true;
+  try {
+    final supported =
+        recognizer is! NativeWarehouseScreenshotTextRecognizer ||
+        (!kIsWeb &&
+            (defaultTargetPlatform == TargetPlatform.iOS ||
+                defaultTargetPlatform == TargetPlatform.android));
+    XFile? image;
+    if (supported) {
+      try {
+        image = await (screenshotPicker?.call() ?? _pickWarehouseScreenshot());
+      } catch (error) {
+        if (!context.mounted || !navigator.mounted) return;
+        AppToast.show(
+          context,
+          error is PlatformException &&
+                  error.code.toLowerCase().contains('denied')
+              ? tr(
+                  context,
+                  ru: 'Нет доступа к фото. Разрешите доступ в настройках устройства и повторите.',
+                  zh: '无法访问照片，请在设备设置中授权后重试。',
+                )
+              : tr(
+                  context,
+                  ru: 'Не удалось открыть выбор скриншота. Попробуйте ещё раз.',
+                  zh: '无法打开截图选择器，请重试。',
+                ),
+          isError: true,
+        );
+        return;
+      }
+      if (!context.mounted || !navigator.mounted || image == null) return;
+    }
+    if (!context.mounted || !navigator.mounted) return;
+    await showBlurredModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => WarehouseAddressCheckerSheet(
+        expected: expected,
+        recognizer: recognizer,
+        screenshotPicker: screenshotPicker,
+        initialImage: image,
+      ),
+    );
+  } finally {
+    _warehouseScreenshotPickers[navigator] = false;
+  }
 }
 
 class WarehouseAddressCheckerSheet extends StatefulWidget {
   final WarehouseAddressCheckData expected;
   final WarehouseScreenshotTextRecognizer recognizer;
+  final Future<XFile?> Function()? screenshotPicker;
+  final XFile? initialImage;
 
   const WarehouseAddressCheckerSheet({
     super.key,
     required this.expected,
     required this.recognizer,
+    this.screenshotPicker,
+    this.initialImage,
   });
 
   @override
@@ -508,27 +562,41 @@ class WarehouseAddressCheckerSheet extends StatefulWidget {
 
 class _WarehouseAddressCheckerSheetState
     extends State<WarehouseAddressCheckerSheet> {
+  bool get _recognitionAvailable =>
+      widget.recognizer is! NativeWarehouseScreenshotTextRecognizer ||
+      (!kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.iOS ||
+              defaultTargetPlatform == TargetPlatform.android));
   bool _checking = false;
   Uint8List? _previewBytes;
   WarehouseAddressCheckResult? _result;
   String? _error;
 
-  Future<void> _pickAndCheck() async {
-    if (_checking) return;
-    final image = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 100,
-    );
-    if (image == null || !mounted) return;
+  @override
+  void initState() {
+    super.initState();
+    final image = widget.initialImage;
+    if (image != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_pickAndCheck(selectedImage: image));
+      });
+    }
+  }
 
-    setState(() {
-      _checking = true;
-      _result = null;
-      _error = null;
-    });
-
+  Future<void> _pickAndCheck({XFile? selectedImage}) async {
+    if (_checking || !_recognitionAvailable) return;
+    setState(() => _checking = true);
     try {
+      final image =
+          selectedImage ??
+          await (widget.screenshotPicker?.call() ?? _pickWarehouseScreenshot());
+      if (!mounted || image == null) return;
+      setState(() {
+        _result = null;
+        _error = null;
+      });
       final bytes = await image.readAsBytes();
+      if (!mounted) return;
       final text = await widget.recognizer.recognize(image.path);
       if (!mounted) return;
       if (text.isEmpty) {
@@ -549,7 +617,18 @@ class _WarehouseAddressCheckerSheetState
     } on PlatformException catch (error) {
       if (!mounted) return;
       setState(() {
-        _error = error.message ?? 'Не удалось проверить скриншот.';
+        _error = error.code.toLowerCase().contains('denied')
+            ? tr(
+                context,
+                ru: 'Нет доступа к фото. Разрешите доступ в настройках устройства и повторите.',
+                zh: '无法访问照片，请在设备设置中授权后重试。',
+              )
+            : error.message ??
+                  tr(
+                    context,
+                    ru: 'Не удалось проверить скриншот.',
+                    zh: '无法检查截图。',
+                  );
       });
     } catch (_) {
       if (!mounted) return;
@@ -617,6 +696,22 @@ class _WarehouseAddressCheckerSheetState
                   height: 1.4,
                 ),
               ),
+              if (!_recognitionAvailable) ...[
+                const SizedBox(height: 16),
+                _MessageCard(
+                  color: context.brandPrimary,
+                  icon: Icons.info_outline,
+                  text: tr(
+                    context,
+                    ru: 'Распознавание скриншота доступно в приложении на iPhone и Android. В браузере сравните адрес и код клиента вручную.',
+                    zh: '截图识别可在 iPhone 和 Android 应用中使用。在浏览器中请手动核对地址和客户代码。',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SelectableText(
+                  '${widget.expected.clientCode}\n${widget.expected.address}\n${widget.expected.phone}',
+                ),
+              ],
               if (_previewBytes != null) ...[
                 const SizedBox(height: 16),
                 ClipRRect(
@@ -659,7 +754,9 @@ class _WarehouseAddressCheckerSheetState
               TrainingTarget(
                 id: 'warehouse.screenshot',
                 child: FilledButton.icon(
-                  onPressed: _checking ? null : _pickAndCheck,
+                  onPressed: _checking || !_recognitionAvailable
+                      ? null
+                      : _pickAndCheck,
                   icon: _checking
                       ? const SizedBox.square(
                           dimension: 20,

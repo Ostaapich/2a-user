@@ -23,6 +23,171 @@ struct ScreenOCRCoreTests {
     func box(_ actual: OCRBox, _ expected: [Double]) {
       for (a, b) in zip([actual.x, actual.y, actual.width, actual.height], expected) { near(a, b) }
     }
+    for (width, height) in [(720.0, 1280.0), (390.0, 844.0), (430.0, 932.0),
+                            (97.0, 161.0), (161.0, 97.0), (1280.0, 720.0)] {
+      let halves = SnapshotViewportPages(width: width, height: height, halfScreen: true)
+      precondition(halves.boxes.count == 2)
+      box(halves.boxes[0], [0, 0, 1, 0.5]); box(halves.boxes[1], [0, 0.5, 1, 0.5])
+      near(halves.duration, 30)
+      precondition(halves.pageIndex(atSeconds: 14.999) == 0 && halves.pageIndex(atSeconds: 15) == 1)
+      precondition(halves.pageIndex(atSeconds: 30) == 1)
+    }
+    for invalid in [SnapshotViewportPages(width: 0, height: 1280, halfScreen: true),
+                    SnapshotViewportPages(width: 720, height: -.infinity, halfScreen: true),
+                    SnapshotViewportPages(width: .nan, height: 1280, halfScreen: true),
+                    SnapshotViewportPages(width: 720, height: 1280, cap: 1, halfScreen: true)] {
+      precondition(invalid.boxes.isEmpty)
+    }
+    for (width, height, expectedHeight, expectedCaptureHeight) in [(390.0, 844.0, 1038, 1558), (430.0, 932.0, 1040, 1560),
+                                           (844.0, 390.0, 222, 332), (720.0, 1280.0, 854, 1280)] {
+      let layout = HalfScreenPiPLayout(screenWidth: width, screenHeight: height)!
+      precondition(layout.width == 960 && layout.height == expectedHeight && layout.height % 2 == 0)
+      precondition(abs(Double(layout.height) - 960 * height / (2 * width)) <= 1)
+      precondition(layout.captureWidth == 720 && layout.captureHeight == expectedCaptureHeight && layout.captureHeight % 2 == 0)
+      precondition(abs(Double(layout.captureHeight) - 720 * height / width) <= 1)
+    }
+    for (width, height) in [(0.0, 844.0), (-1.0, 844.0), (Double.nan, 844.0),
+                            (390.0, Double.infinity), (9000.0, 844.0), (8192.0, 8192.0),
+                            (1.0, 8192.0), (8192.0, 1.0), (Double.leastNonzeroMagnitude, 844.0),
+                            (500.0, 6000.0)] {
+      precondition(HalfScreenPiPLayout(screenWidth: width, screenHeight: height) == nil)
+    }
+    let safeLayout = HalfScreenPiPLayout(screenWidth: 440, screenHeight: 956, safeAreaTop: 62, safeAreaBottom: 34)!
+    let fullLayout = HalfScreenPiPLayout(screenWidth: 440, screenHeight: 956)!
+    precondition(safeLayout.height == 938 && safeLayout.height < fullLayout.height)
+    precondition(safeLayout.captureHeight == fullLayout.captureHeight, "Safe areas only affect PiP output, never source capture")
+    for inset in [-1.0, Double.nan, Double.infinity, 956.0] {
+      precondition(HalfScreenPiPLayout(screenWidth: 440, screenHeight: 956, safeAreaTop: inset) == nil)
+    }
+    func mask(top: Bool, second: Bool = false, rounded: Bool = true, background: UInt8 = 200, stash: Bool = false) -> [UInt8] {
+      let width = 96, height = 208
+      var pixels = [UInt8](repeating: background, count: width * height)
+      func draw(y originY: Int) {
+        let left = stash ? -20 : 8, right = left + 78, bottom = originY + 84
+        for y in max(0, originY)..<min(height, bottom) { for x in max(0, left)..<min(width, right) {
+          let dx = max(0, max(Double(left + 10) - Double(x) - 0.5, Double(x) + 0.5 - Double(right - 10)))
+          let dy = max(0, max(Double(originY + 10) - Double(y) - 0.5, Double(y) + 0.5 - Double(bottom - 10)))
+          if !rounded || dx * dx + dy * dy <= 100 { pixels[y * width + x] = 0 }
+        } }
+      }
+      draw(y: top ? 8 : 116); if second { draw(y: top ? 116 : 8) }
+      return pixels
+    }
+    let upperMask = OCRBox(x: 0.02, y: 0.08, width: 0.96, height: 0.48)
+    let lowerMask = OCRBox(x: 0.02, y: 0.45, width: 0.96, height: 0.48)
+    box(PiPVisibleRegion.box(position: .top, mask: upperMask)!, [0, 0.58, 1, 0.42])
+    box(PiPVisibleRegion.box(position: .bottom, mask: lowerMask)!, [0, 0, 1, 0.43])
+    box(PiPVisibleRegion.box(position: .top, mask: OCRBox(x: 0, y: 0.02, width: 1, height: 0.4))!, [0, 0.5, 1, 0.5])
+    box(PiPVisibleRegion.box(position: .bottom, mask: OCRBox(x: 0, y: 0.6, width: 1, height: 0.4))!, [0, 0, 1, 0.5])
+    for invalid in [nil, OCRBox(x: .nan, y: 0, width: 1, height: 0.4),
+      OCRBox(x: 0, y: -.infinity, width: 1, height: 0.4),
+      OCRBox(x: 0, y: 0, width: 0, height: 0.4),
+      OCRBox(x: -0.1, y: 0, width: 1, height: 0.4),
+      OCRBox(x: 0, y: 0.7, width: 1, height: 0.4)] {
+      for position in [PiPVerticalPosition.top, .bottom] {
+        precondition(PiPVisibleRegion.box(position: position, mask: invalid) == nil)
+      }
+    }
+    precondition(PiPVisibleRegion.box(position: .bottom, mask: OCRBox(x: 0, y: 0.01, width: 1, height: 0.6)) == nil)
+    precondition(PiPVisibleRegion.box(position: .top, mask: OCRBox(x: 0, y: 0.4, width: 1, height: 0.59)) == nil)
+    var detector = PiPPositionDetector()
+    func detect(_ pixels: [UInt8], _ time: Double) -> PiPVerticalPosition? {
+      detector.observe(width: 96, height: 208, luma: pixels, expectedAspect: 78.0 / 84, now: time)
+    }
+    precondition(detect(mask(top: true), 0) == nil)
+    precondition(detect(mask(top: true), 0.25) == nil)
+    precondition(detect(mask(top: true), 0.49) == nil)
+    precondition(detect(mask(top: true), 0.5) == .top)
+    precondition(detector.confirmedMask != nil)
+    precondition(PiPVisibleRegion.box(position: .top, mask: detector.confirmedMask) != nil)
+    precondition(detect(mask(top: false), 0.75) == .top)
+    precondition(detect(mask(top: false), 1) == .top)
+    precondition(detect(mask(top: false), 1.25) == .bottom)
+    for (offset, ambiguous) in [mask(top: true, second: true),
+      mask(top: true, background: 8), mask(top: true, stash: true),
+      [UInt8](repeating: 0, count: 96 * 208), [UInt8](repeating: 200, count: 96 * 208)].enumerated() {
+      precondition(detect(ambiguous, 1.5 + Double(offset) * 0.25) == .bottom)
+      var uncertain = PiPPositionDetector()
+      for time in [0.0, 0.25, 0.5, 0.75] {
+        precondition(uncertain.observe(width: 96, height: 208, luma: ambiguous, expectedAspect: 78.0 / 84, now: time) == nil)
+      }
+    }
+    // Protected video need not preserve PiP's visual corner radius or light UI.
+    for top in [true, false] {
+      for background: UInt8 in [20, 40, 200] {
+        var rectangular = PiPPositionDetector()
+        let pixels = mask(top: top, rounded: false, background: background)
+        for time in [0.0, 0.25] {
+          precondition(rectangular.observe(width: 96, height: 208, luma: pixels,
+            expectedAspect: 78.0 / 84, now: time) == nil)
+        }
+        precondition(rectangular.observe(width: 96, height: 208, luma: pixels,
+          expectedAspect: 78.0 / 84, now: 0.5) == (top ? .top : .bottom))
+        precondition(rectangular.diagnostics["candidateCount"] as? Int == 1)
+        let components = rectangular.diagnostics["components"] as! [[String: Any]]
+        precondition(!components.isEmpty && components.count <= 4 && components.contains { $0["reason"] as? String == "accepted" })
+      }
+    }
+    // A grey shadow/antialias band would fail a one-pixel bright ring test.
+    var shadow = mask(top: true, rounded: false, background: 80)
+    for y in 7...92 { for x in 7...86 {
+      if x == 7 || x == 86 || y == 7 || y == 92 { shadow[y * 96 + x] = 16 }
+    } }
+    var shadowDetector = PiPPositionDetector()
+    for time in [0.0, 0.25, 0.5] {
+      let result = shadowDetector.observe(width: 96, height: 208, luma: shadow,
+        expectedAspect: 78.0 / 84, now: time)
+      precondition(result == (time == 0.5 ? .top : nil))
+    }
+    // Near/full-width masks at the edge remain detectable; stashed small masks do not.
+    var edgeMask = [UInt8](repeating: 100, count: 96 * 208)
+    for y in 8..<112 { for x in 0..<96 { edgeMask[y * 96 + x] = 0 } }
+    var edgeDetector = PiPPositionDetector()
+    for time in [0.0, 0.25, 0.5] {
+      let result = edgeDetector.observe(width: 96, height: 208, luma: edgeMask,
+        expectedAspect: 96.0 / 104, now: time)
+      precondition(result == (time == 0.5 ? .top : nil))
+    }
+    // On-device failure: a bottom PiP mask joins dark artwork above. Component
+    // bbox is ~95% wide,59% tall with aspect.74/fill.71; solid interior is PiP.
+    func joinedMask(top: Bool) -> [UInt8] {
+      var pixels = [UInt8](repeating: 100, count: 96 * 208)
+      let y0 = top ? 18 : 100
+      for y in y0..<(y0 + 90) { for x in 2..<94 { pixels[y * 96 + x] = 0 } }
+      let stem = top ? 108..<142 : 66..<100
+      for y in stem { for x in 38..<58 { pixels[y * 96 + x] = 0 } }
+      return pixels
+    }
+    var joined = PiPPositionDetector()
+    for time in [0.0, 0.9, 1.8] {
+      let value = joined.observe(width: 96, height: 208, luma: joinedMask(top: true), expectedAspect: 92.0 / 90, now: time)
+      precondition(value == (time == 1.8 ? .top : nil))
+    }
+    for time in [2.7, 3.6, 4.5] {
+      let value = joined.observe(width: 96, height: 208, luma: joinedMask(top: false), expectedAspect: 92.0 / 90, now: time)
+      precondition(value == (time == 4.5 ? .bottom : .top), "Joined lower mask must replace stale top position")
+    }
+    precondition(joined.diagnostics["candidateCount"] as? Int == 1)
+    precondition((joined.diagnostics["solidRectangles"] as! [[String: Any]]).first?["side"] as? String == "bottom")
+    precondition((joined.diagnostics["bottomBlackFraction"] as! Double) > (joined.diagnostics["topBlackFraction"] as! Double))
+    // A circle/irregular dark patch must not qualify as a dense rounded rectangle.
+    var irregular = mask(top: true)
+    for y in 40..<90 { for x in 45..<86 { irregular[y * 96 + x] = 200 } }
+    var irregularDetector = PiPPositionDetector()
+    for time in [0.0, 0.25, 0.5] {
+      precondition(irregularDetector.observe(width: 96, height: 208, luma: irregular, expectedAspect: 78.0 / 84, now: time) == nil)
+    }
+    precondition(detector.observe(width: 192, height: 416, luma: [UInt8](repeating: 200, count: 192 * 416), expectedAspect: 78.0 / 84, now: 4) == nil)
+    precondition(detector.confirmedMask == nil)
+    var timing = PiPPositionDetector()
+    for time in [0.0, 4.0, 8.0] {
+      precondition(timing.observe(width: 96, height: 208, luma: mask(top: true), expectedAspect: 78.0 / 84, now: time) == nil)
+    }
+    precondition(timing.observe(width: 96, height: 208, luma: mask(top: true), expectedAspect: 78.0 / 84, now: 8.25) == nil)
+    precondition(timing.observe(width: 96, height: 208, luma: mask(top: true), expectedAspect: 78.0 / 84, now: 8.5) == .top)
+    timing.prepareOrientation(1); timing.prepareOrientation(3)
+    precondition(timing.confirmedMask == nil)
+    precondition(timing.observe(width: 96, height: 208, luma: mask(top: true), expectedAspect: 78.0 / 84, now: 8.75) == nil)
     let pages = SnapshotViewportPages(width: 720, height: 1280)
     precondition(pages.boxes.count == 4)
     near(pages.boxes[0].height * 1280, 405)
@@ -194,6 +359,6 @@ struct ScreenOCRCoreTests {
     precondition(!moving.observe(fingerprint(200), now: 0.6))
     precondition(!moving.observe(fingerprint(200), now: 0.8))
     precondition(moving.observe(fingerprint(200), now: 1.01))
-    print("PASS: revision stop/latest/session/concurrent guards; Vision clipping; all 8 EXIF non-square/corner transforms; NFC/whitespace fidelity; deterministic anchored reading rows; grayscale distance and sparse glyph change; settle/jitter/change/reset/clock semantics")
+    print("PASS: PiP rectangular/rounded/dark-contrast/shadow/fullwidth masks, bounded diagnostics, uniqueness/density/timing/hysteresis/reset/dark-page ambiguity; half-screen exact2 boxes, unchanged30s navigation, even960wide layouts and invalid/overflow guards; revision stop/latest/session/concurrent guards; Vision clipping; all 8 EXIF non-square/corner transforms; NFC/whitespace fidelity; deterministic anchored reading rows; grayscale distance and sparse glyph change; settle/jitter/change/reset/clock semantics")
   }
 }

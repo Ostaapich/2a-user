@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1293,16 +1294,15 @@ class PushNotificationService {
       return;
     }
 
-    // Используем flutter_local_notifications для управления badge
-    // На iOS badge управляется через badgeNumber в notification
-    // На Android badges управляются через каналы уведомлений
+    // Updating the iOS application badge must not remove delivered notifications.
+    // Android launchers derive badges from their notification channels.
+    if (kIsWeb || !_isIOS) return;
     try {
-      if (count <= 0) {
-        // Отменяем все уведомления для сброса badge
-        await _notifications.cancelAll();
-      }
-      // Примечание: для установки badge count нужно показать notification с badgeNumber
-      // или использовать platform-specific API
+      await const MethodChannel(
+        'com.twoalogistic.user/notification_badge',
+      ).invokeMethod<void>('setCount', {
+        'count': _badgeEnabled ? count.clamp(0, 1 << 31) : 0,
+      });
     } catch (e) {
       debugPrint('Error updating badge: $e');
     }

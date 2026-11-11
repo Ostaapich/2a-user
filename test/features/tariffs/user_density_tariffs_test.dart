@@ -84,6 +84,14 @@ Future<void> _pump(
   await tester.pump();
   await tester.pump(const Duration(seconds: 1));
   await tester.pump();
+  if (!public) {
+    final expand = find.text(locale == 'zh' ? '区间及费率' : 'Диапазоны и ставки');
+    if (expand.evaluate().isNotEmpty) {
+      await tester.ensureVisible(expand);
+      await tester.tap(expand);
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+  }
 }
 
 Future<void> _dispose(WidgetTester tester) async {
@@ -206,7 +214,7 @@ void main() {
     'weight card keeps baseCost minimum, rows, and original weight tutorial',
     (tester) async {
       await _pump(tester, _weight);
-      expect(find.text('\$2'), findsOneWidget);
+      expect(find.text('от \$2'), findsOneWidget);
       expect(find.text('10 – 20 кг'), findsOneWidget);
       expect(find.text('\$3 / кг'), findsOneWidget);
       expect(find.text('Весовые диапазоны'), findsOneWidget);
@@ -231,6 +239,81 @@ void main() {
       expect(find.text(ru ? '\$80 / м³' : '\$80 / m³'), findsOneWidget);
       expect(find.text(ru ? 'за м³' : '每立方米'), findsOneWidget);
       expect(find.text(ru ? 'за кг' : '每千克'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _dispose(tester);
+    });
+  }
+
+  for (final locale in ['ru', 'zh']) {
+    for (final density in [false, true]) {
+      testWidgets(
+        'branded tariff ranges reuse app surface and typography320 $locale density=$density',
+        (tester) async {
+          await _pump(
+            tester,
+            density ? _mixed : _weight,
+            locale: locale,
+            width: 320,
+          );
+          final tile = find.byType(ExpansionTile);
+          expect(tile, findsOneWidget);
+          final title = tester.widget<Text>(
+            find.descendant(of: tile, matching: find.byType(Text)).first,
+          );
+          expect(title.style?.fontFamily, 'Gilroy');
+          expect(title.style?.fontWeight, FontWeight.w900);
+          final surface =
+              tester
+                      .widget<Container>(
+                        find
+                            .ancestor(
+                              of: tile,
+                              matching: find.byType(Container),
+                            )
+                            .first,
+                      )
+                      .decoration
+                  as BoxDecoration;
+          expect(surface.color, const Color(0xFFF8FAFC));
+          expect(surface.borderRadius, BorderRadius.circular(18));
+          final rangeLabel = density
+              ? (locale == 'ru' ? '0 – 100 кг/м³' : '0 – 100 kg/m³')
+              : (locale == 'ru' ? '10 – 20 кг' : '10 – 20 kg');
+          final label = find.text(rangeLabel);
+          expect(label, findsOneWidget);
+          await tester.ensureVisible(label);
+          await tester.pump();
+          expect(tester.getSize(label).width, greaterThan(0));
+          final toggle = find.text(
+            locale == 'ru' ? 'Диапазоны и ставки' : '区间及费率',
+          );
+          await tester.ensureVisible(toggle);
+          await tester.tap(toggle);
+          await tester.pump(const Duration(milliseconds: 400));
+          expect(label, findsNothing);
+          await tester.tap(toggle);
+          await tester.pump(const Duration(milliseconds: 400));
+          expect(label, findsOneWidget);
+          expect(tester.takeException(), isNull);
+          await _dispose(tester);
+        },
+      );
+    }
+  }
+
+  for (final locale in ['ru', 'zh']) {
+    testWidgets('consolidated base-only price clearly says from $locale', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        const UserDeliveryTariff(id: 7, name: 'Сборный груз', baseCost: 2.5),
+        locale: locale,
+        width: 320,
+      );
+      expect(find.text(locale == 'ru' ? 'от \$2.5' : '\$2.5起'), findsOneWidget);
+      expect(find.text('\$2.5'), findsNothing);
+      expect(find.byType(ExpansionTile), findsNothing);
       expect(tester.takeException(), isNull);
       await _dispose(tester);
     });

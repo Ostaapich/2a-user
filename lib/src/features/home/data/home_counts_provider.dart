@@ -22,6 +22,23 @@ final homeTracksCountProvider = FutureProvider.family<int, String>((
   return data['total'] as int? ?? 0;
 });
 
+// Count pending tracks on the server, never from the loaded digest page.
+final homePendingTracksCountProvider = FutureProvider.family<int, String>((
+  ref,
+  code,
+) async {
+  if (ref.watch(demoModeProvider)) return 0;
+  final query = {'clientCode': code, 'take': 1, 'statuses': 'pending'};
+  final data = await StaleDataCache.getJson(
+    ref: ref,
+    cacheKey: StaleDataCache.buildKey('home_pending_tracks_count', query),
+    label: 'количество треков в ожидании',
+    request: () =>
+        ref.read(apiClientProvider).get('/tracks', queryParameters: query),
+  );
+  return data['total'] as int? ?? 0;
+});
+
 final homeAssembliesCountProvider = FutureProvider.family<int, String>((
   ref,
   code,

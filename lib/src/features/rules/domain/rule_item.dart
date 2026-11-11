@@ -8,6 +8,7 @@ class RuleItem {
   /// Markdown content for rich text rendering (converted from Delta if needed)
   final String content;
   final int order;
+  final DateTime? updatedAt;
 
   const RuleItem({
     required this.slug,
@@ -15,11 +16,12 @@ class RuleItem {
     required this.excerpt,
     required this.content,
     required this.order,
+    this.updatedAt,
   });
 
   factory RuleItem.fromJson(Map<String, dynamic> json) {
     final rawContent = json['content'] as String? ?? '';
-    
+
     // Конвертируем Delta JSON в Markdown если нужно
     final content = DeltaConverter.toMarkdown(rawContent);
 
@@ -29,6 +31,7 @@ class RuleItem {
       excerpt: _extractExcerpt(content),
       content: content,
       order: json['sortOrder'] as int? ?? 0,
+      updatedAt: DateTime.tryParse(json['updatedAt']?.toString() ?? ''),
     );
   }
 

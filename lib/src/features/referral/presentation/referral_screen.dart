@@ -8,6 +8,7 @@ import '../../training/presentation/training_target.dart';
 import '../../../core/branding/company_branding_provider.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/ui/app_colors.dart';
+import '../../../core/utils/locale_text.dart';
 import '../../../core/ui/app_input_decoration.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/scroll_to_top_button.dart';
@@ -214,6 +215,8 @@ class _ReferralScreenState extends ConsumerState<ReferralScreen> {
               color: context.brandPrimary,
               child: ListView(
                 controller: _scrollController,
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: EdgeInsets.fromLTRB(
                   16,
@@ -464,25 +467,13 @@ class _ReferralHeroCard extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 14),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      _ReferralHeroChip(
-                        icon: Icons.scale_rounded,
-                        label:
-                            '${_formatKg(data.referralKgBalance)} кг доступно',
-                      ),
-                      _ReferralHeroChip(
-                        icon: Icons.percent_rounded,
-                        label:
-                            'до ${_formatPercent(data.maxBonusPercent)}% счёта',
-                      ),
-                      _ReferralHeroChip(
-                        icon: Icons.people_alt_rounded,
-                        label: '${data.referrals.length} приглашено',
-                      ),
-                    ],
+                  _ReferralHeroChip(
+                    icon: Icons.info_outline_rounded,
+                    label: tr(
+                      context,
+                      ru: 'Бонус после первой оплаты друга',
+                      zh: '好友首次付款后获得奖励',
+                    ),
                   ),
                 ],
               ),
@@ -1131,6 +1122,7 @@ class _LinkCodeCard extends StatelessWidget {
               Expanded(
                 child: TextField(
                   controller: controller,
+                  textInputAction: TextInputAction.done,
                   textCapitalization: TextCapitalization.characters,
                   decoration: appInputDecoration(
                     context,

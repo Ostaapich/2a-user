@@ -6,8 +6,7 @@ import '../../../core/network/api_client.dart';
 import '../domain/purchase_list.dart';
 
 /// Active draft purchase list (cart)
-final activePurchaseListProvider =
-    FutureProvider<PurchaseList?>((ref) async {
+final activePurchaseListProvider = FutureProvider<PurchaseList?>((ref) async {
   final apiClient = ref.read(apiClientProvider);
 
   try {
@@ -20,20 +19,18 @@ final activePurchaseListProvider =
       final data = response.data as Map<String, dynamic>;
       final listsJson = data['lists'] as List<dynamic>? ?? [];
       if (listsJson.isNotEmpty) {
-        return PurchaseList.fromJson(
-            listsJson.first as Map<String, dynamic>);
+        return PurchaseList.fromJson(listsJson.first as Map<String, dynamic>);
       }
     }
     return null;
   } on DioException catch (e) {
     debugPrint('Error loading active purchase list: $e');
-    return null;
+    rethrow;
   }
 });
 
 /// All purchase lists for history
-final purchaseListsProvider =
-    FutureProvider<List<PurchaseList>>((ref) async {
+final purchaseListsProvider = FutureProvider<List<PurchaseList>>((ref) async {
   final apiClient = ref.read(apiClientProvider);
 
   try {
@@ -43,20 +40,21 @@ final purchaseListsProvider =
       final data = response.data as Map<String, dynamic>;
       final listsJson = data['lists'] as List<dynamic>? ?? [];
       return listsJson
-          .map((json) =>
-              PurchaseList.fromJson(json as Map<String, dynamic>))
+          .map((json) => PurchaseList.fromJson(json as Map<String, dynamic>))
           .toList();
     }
     return [];
   } on DioException catch (e) {
     debugPrint('Error loading purchase lists: $e');
-    return [];
+    rethrow;
   }
 });
 
 /// Detail of a specific purchase list
-final purchaseListDetailProvider =
-    FutureProvider.family<PurchaseList?, int>((ref, id) async {
+final purchaseListDetailProvider = FutureProvider.family<PurchaseList?, int>((
+  ref,
+  id,
+) async {
   final apiClient = ref.read(apiClientProvider);
 
   try {
@@ -72,7 +70,8 @@ final purchaseListDetailProvider =
     return null;
   } on DioException catch (e) {
     debugPrint('Error loading purchase list detail: $e');
-    return null;
+    if (e.response?.statusCode == 404) return null;
+    rethrow;
   }
 });
 

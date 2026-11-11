@@ -11,6 +11,19 @@ final class CaptureSource: NSObject, SCContentSharingPickerObserver, SCStreamDel
   private let gate: SessionGate
   private let ocr: ScreenOCRPipeline?
   private let captureWindow: Bool
+  private let halfScreenLayout: HalfScreenPiPLayout?
+  private let positionChanged: (UUID, PiPVerticalPosition, OCRBox) -> Void
+  private let positionDiagnostics: (UUID, [String: Any]) -> Void
+  private var lastPositionDiagnosticTime: TimeInterval = 0
+  // All detector state is owned by the serial video queue.
+  private var positionDetector = PiPPositionDetector()
+  private var lastPiPPosition: PiPVerticalPosition?
+  private var lastPiPMask: OCRBox?
+  private var detectsPiPPosition = false
+
+  func setPiPActive(_ active: Bool) {
+    queue.async { [weak self] in self?.detectsPiPPosition = active }
+  }
   private let sourceStyle: (UUID, String) -> Void
   private let queue = DispatchQueue(label: "com.twoalogistic.screenprobe.video", qos: .userInitiated)
   private var stream: SCStream?
@@ -94,12 +107,15 @@ final class CaptureSource: NSObject, SCContentSharingPickerObserver, SCStreamDel
   }
 
   init(token: UUID, gate: SessionGate, ocr: ScreenOCRPipeline? = nil, captureWindow: Bool = false,
+       halfScreenLayout: HalfScreenPiPLayout? = nil,
+       positionChanged: @escaping (UUID, PiPVerticalPosition, OCRBox) -> Void = { _, _, _ in },
+       positionDiagnostics: @escaping (UUID, [String: Any]) -> Void = { _, _ in },
        sourceStyle: @escaping (UUID, String) -> Void = { _, _ in },
        video: @escaping (UUID, UInt64, Int32, Int32) -> Void,
        state: @escaping (UUID, String) -> Void,
        qaState: @escaping (UUID, String) -> Void = { _, _ in },
        stopState: @escaping (UUID, String) -> Void = { _, _ in }) {
-    self.token = token; self.gate = gate; self.ocr = ocr; self.captureWindow = captureWindow; self.sourceStyle = sourceStyle; self.video = video; self.state = state
+    self.token = token; self.gate = gate; self.ocr = ocr; self.captureWindow = captureWindow; self.halfScreenLayout = halfScreenLayout; self.positionChanged = positionChanged; self.positionDiagnostics = positionDiagnostics; self.sourceStyle = sourceStyle; self.video = video; self.state = state
     self.qaState = qaState; self.stopState = stopState
   }
 
@@ -320,8 +336,8 @@ final class CaptureSource: NSObject, SCContentSharingPickerObserver, SCStreamDel
         self.state(self.token, "non_video_filter_rejected"); return
       }
       let configuration = SCStreamConfiguration()
-      configuration.width = 720
-      configuration.height = 1280
+      configuration.width = halfScreenLayout?.captureWidth ?? 720
+      configuration.height = halfScreenLayout?.captureHeight ?? 1280
       configuration.capturesAudio = false
       let capture = SCStream(filter: filter, configuration: configuration, delegate: self)
       do {
@@ -367,6 +383,33 @@ final class CaptureSource: NSObject, SCContentSharingPickerObserver, SCStreamDel
         let number = attachments?.first?[.videoOrientation] as? NSNumber ??
           CMGetAttachment(sampleBuffer, key: SCStreamFrameInfo.videoOrientation.rawValue as CFString, attachmentModeOut: nil) as? NSNumber
         if let raw = number?.uint32Value, let orientation = CGImagePropertyOrientation(rawValue: raw) {
+          if detectsPiPPosition, let layout = halfScreenLayout,
+             let position = ScreenFrameSampler.pipPosition(image, orientation: orientation,
+                expectedAspect: Double(layout.width) / Double(layout.height),
+                now: ProcessInfo.processInfo.systemUptime, detector: &positionDetector),
+             let mask = positionDetector.confirmedMask,
+             position != lastPiPPosition || lastPiPMask.map({ abs($0.y - mask.y) > 0.01 || abs($0.height - mask.height) > 0.01 }) != false {
+            lastPiPPosition = position
+            lastPiPMask = mask
+            // Moving PiP uncovers previously hidden source pixels. Invalidate
+            // the old frame before submitting this newly visible content.
+            ocr?.retryCurrentFrame()
+            DispatchQueue.main.async { [weak self] in
+              guard let self, self.gate.isCurrent(self.token) else { return }
+              self.positionChanged(self.token, position, mask)
+            }
+          }
+          if detectsPiPPosition {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastPositionDiagnosticTime >= 1 {
+              lastPositionDiagnosticTime = now
+              let diagnostic = positionDetector.diagnostics
+              DispatchQueue.main.async { [weak self] in
+                guard let self, self.gate.isCurrent(self.token) else { return }
+                self.positionDiagnostics(self.token, diagnostic)
+              }
+            }
+          }
           ocr?.submit(image, orientation: orientation)
         } else { ocr?.orientationUnavailable() }
       }

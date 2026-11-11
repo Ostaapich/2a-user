@@ -159,6 +159,8 @@ Future<VideoPlayerController> createAuthenticatedVideoController(
       final session = await BrowserVideoSession.open(
         path: path,
         getToken: api.getToken,
+        getSessionIdentity: () async =>
+            '${api.activeBaseUrl}:${await api.getMediaCacheIdentity()}',
         onInvalid: () {
           controller.pause().ignore();
         },
@@ -173,10 +175,7 @@ Future<VideoPlayerController> createAuthenticatedVideoController(
     return _StreamingVideoController(
       Uri.parse('${ApiConfig.baseUrl}$path'),
       progressivePlayback: progressivePlayback,
-      httpHeaders: {
-        'Authorization': 'Bearer $token',
-        'X-Warehouse-Protocol': '1',
-      },
+      httpHeaders: {'Authorization': 'Bearer $token'},
     );
   }
   final bytes = await loadMediaBytes(mediaApiClient(context), url);

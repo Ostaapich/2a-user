@@ -5,8 +5,11 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/network/api_config.dart';
 import '../../../../core/ui/app_colors.dart';
+import '../../../../core/ui/unsaved_changes_guard.dart';
 import '../../../../core/ui/app_input_decoration.dart';
+import '../../../../core/utils/locale_text.dart';
 import '../../data/purchase_blank_model.dart';
+import '../../data/blank_item_save_session.dart';
 import '../purchase_blank_ui.dart';
 
 typedef BlankItemPhotoPicker = Future<List<XFile>> Function();
@@ -54,6 +57,27 @@ class _BlankItemFormState extends State<BlankItemForm> {
   final List<_PickedPhoto> _pickedPhotos = [];
   bool _isSaving = false;
   bool _isPickingPhotos = false;
+  String? _saveError;
+  late final List<String> _initialValues;
+  List<TextEditingController> get _controllers => [
+    _nameCtrl,
+    _urlCtrl,
+    _charCtrl,
+    _qtyCtrl,
+    _priceCtrl,
+  ];
+  bool get _hasChanges =>
+      _pickedPhotos.isNotEmpty ||
+      List.generate(
+        _controllers.length,
+        (i) => _controllers[i].text != _initialValues[i],
+      ).any((v) => v);
+  Future<void> _cancel() async {
+    if (_isSaving || _isPickingPhotos) return;
+    if (_hasChanges && !await confirmDiscardChanges(context)) return;
+    if (!mounted) return;
+    widget.onCancel?.call();
+  }
 
   @override
   void initState() {
@@ -68,6 +92,7 @@ class _BlankItemFormState extends State<BlankItemForm> {
     _priceCtrl = TextEditingController(
       text: item != null ? item.unitPrice.toStringAsFixed(2) : '',
     );
+    _initialValues = _controllers.map((c) => c.text).toList();
   }
 
   @override
@@ -116,9 +141,12 @@ class _BlankItemFormState extends State<BlankItemForm> {
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (_isSaving || !_formKey.currentState!.validate()) return;
 
-    setState(() => _isSaving = true);
+    setState(() {
+      _isSaving = true;
+      _saveError = null;
+    });
     try {
       await widget.onSave(
         productName: _nameCtrl.text.trim(),
@@ -136,6 +164,23 @@ class _BlankItemFormState extends State<BlankItemForm> {
             ? _pickedPhotos.map((p) => p.name).toList()
             : null,
       );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _saveError =
+            error is BlankItemSaveFailure &&
+                error.stage == BlankItemSaveStage.photo
+            ? tr(
+                context,
+                ru: 'Товар сохранён, но не все фото загрузились. Повторите сохранение — уже загруженные фото не повторятся.',
+                zh: '商品已保存，但部分照片上传失败。请重试，已上传的照片不会重复。',
+              )
+            : tr(
+                context,
+                ru: 'Не удалось сохранить товар. Введённые данные оставлены в форме. Проверьте соединение и повторите.',
+                zh: '无法保存商品。已保留填写内容，请检查网络后重试。',
+              );
+      });
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -145,291 +190,338 @@ class _BlankItemFormState extends State<BlankItemForm> {
   Widget build(BuildContext context) {
     final isEditing = widget.existingItem != null;
 
-    return Container(
-      decoration: PurchaseBlankUi.cardDecoration(),
-      padding: const EdgeInsets.all(16),
-      child: Form(
-        key: _formKey,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // ── Заголовок ──────────────────
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: context.brandPrimary.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Icon(
-                    isEditing ? Icons.edit_rounded : Icons.add_rounded,
-                    color: context.brandPrimary,
-                    size: 23,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        isEditing ? 'Редактирование товара' : 'Новый товар',
-                        style: PurchaseBlankUi.sectionTitleStyle,
-                      ),
-                      const SizedBox(height: 3),
-                      const Text(
-                        'Добавьте ссылку, параметры, цену и фото товара',
-                        style: TextStyle(
-                          color: AppColors.textSecondary,
-                          fontFamily: 'Gilroy',
-                          fontSize: 12,
-                          height: 1.18,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (widget.onCancel != null) ...[
-                  const SizedBox(width: 8),
-                  Material(
-                    color: const Color(0xFFF8FAFC),
-                    borderRadius: BorderRadius.circular(14),
-                    child: InkWell(
-                      onTap: widget.onCancel,
-                      borderRadius: BorderRadius.circular(14),
-                      child: const SizedBox(
-                        width: 38,
-                        height: 38,
-                        child: Icon(
-                          Icons.close_rounded,
-                          size: 20,
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // ── Название товара ────────────
-            _FormField(
-              controller: _nameCtrl,
-              label: 'Название товара *',
-              hint: 'Например: Кроссовки Nike Air Max 90',
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
-            ),
-            const SizedBox(height: 12),
-
-            // ── Ссылка на товар ────────────
-            _FormField(
-              controller: _urlCtrl,
-              label: 'Ссылка на товар *',
-              hint: 'https://...',
-              keyboardType: TextInputType.url,
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
-            ),
-            const SizedBox(height: 12),
-
-            // ── Характеристики ─────────────
-            _FormField(
-              controller: _charCtrl,
-              label: 'Характеристики',
-              hint: 'Размер, цвет, модель...',
-              maxLines: 3,
-            ),
-            const SizedBox(height: 12),
-
-            // ── Количество + Цена ──────────
-            Row(
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: _FormField(
-                    controller: _qtyCtrl,
-                    label: 'Кол-во',
-                    hint: '1',
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    validator: (v) {
-                      final n = int.tryParse(v ?? '');
-                      return (n == null || n < 1) ? 'Мин. 1' : null;
-                    },
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  flex: 3,
-                  child: _FormField(
-                    controller: _priceCtrl,
-                    label: 'Цена за шт. (¥)',
-                    hint: '0.00',
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(
-                        RegExp(r'^\d+[.,]?\d{0,2}'),
-                      ),
-                    ],
-                    validator: (v) {
-                      final n = double.tryParse((v ?? '').replaceAll(',', '.'));
-                      return (n == null || n <= 0) ? 'Укажите цену' : null;
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-
-            // ── Фото ──────────────────────
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: Colors.black.withValues(alpha: 0.025),
-                ),
-              ),
-              child: Column(
+    return UnsavedFormGuard(
+      controllers: _controllers,
+      extraState: '${_pickedPhotos.length}',
+      isBusy: _isSaving || _isPickingPhotos,
+      child: Container(
+        decoration: PurchaseBlankUi.cardDecoration(),
+        padding: const EdgeInsets.all(16),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── Заголовок ──────────────────
+              Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'Фото товара',
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontFamily: 'Gilroy',
-                      fontSize: 13,
-                      height: 16 / 13,
-                      fontWeight: FontWeight.w900,
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: context.brandPrimary.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Icon(
+                      isEditing ? Icons.edit_rounded : Icons.add_rounded,
+                      color: context.brandPrimary,
+                      size: 23,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Можно добавить несколько снимков, чтобы сотруднику было проще выкупить товар.',
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontFamily: 'Gilroy',
-                      fontSize: 11.5,
-                      height: 1.22,
-                      fontWeight: FontWeight.w600,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isEditing
+                              ? tr(
+                                  context,
+                                  ru: 'Редактирование товара',
+                                  zh: '编辑商品',
+                                )
+                              : tr(context, ru: 'Новый товар', zh: '新商品'),
+                          style: PurchaseBlankUi.sectionTitleStyle,
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          tr(
+                            context,
+                            ru: 'Добавьте ссылку, параметры, цену и фото товара',
+                            zh: '填写商品链接、参数、价格和图片',
+                          ),
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontFamily: 'Gilroy',
+                            fontSize: 12,
+                            height: 1.18,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      // Существующие фото (если редактирование)
-                      if (widget.existingItem != null)
-                        ...widget.existingItem!.photoUrls.map(
-                          (url) => _PhotoThumb(imageUrl: url),
-                        ),
-                      // Новые фото
-                      ..._pickedPhotos.asMap().entries.map(
-                        (e) => _PhotoThumb(
-                          bytes: e.value.bytes,
-                          onRemove: () => _removePhoto(e.key),
-                        ),
-                      ),
-                      // Кнопка добавления
-                      Material(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        child: InkWell(
-                          key: const Key('blank_item_add_photos'),
-                          onTap: _isPickingPhotos ? null : _pickPhotos,
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            width: 76,
-                            height: 76,
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                color: context.brandPrimary.withValues(
-                                  alpha: 0.18,
-                                ),
-                                width: 1.2,
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Icon(
-                              Icons.add_a_photo_rounded,
-                              color: context.brandPrimary,
-                              size: 24,
-                            ),
+                  if (widget.onCancel != null) ...[
+                    const SizedBox(width: 8),
+                    Material(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(14),
+                      child: InkWell(
+                        onTap: _isSaving ? null : _cancel,
+                        borderRadius: BorderRadius.circular(14),
+                        child: const SizedBox(
+                          width: 38,
+                          height: 38,
+                          child: Icon(
+                            Icons.close_rounded,
+                            size: 20,
+                            color: AppColors.textSecondary,
                           ),
                         ),
                       ),
-                    ],
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // ── Название товара ────────────
+              _FormField(
+                controller: _nameCtrl,
+                label: tr(context, ru: 'Название товара *', zh: '商品名称 *'),
+                hint: tr(
+                  context,
+                  ru: 'Например: Кроссовки Nike Air Max 90',
+                  zh: '例如：Nike Air Max 90运动鞋',
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? tr(context, ru: 'Обязательное поле', zh: '必填项')
+                    : null,
+              ),
+              const SizedBox(height: 12),
+
+              // ── Ссылка на товар ────────────
+              _FormField(
+                controller: _urlCtrl,
+                label: tr(context, ru: 'Ссылка на товар *', zh: '商品链接 *'),
+                hint: 'https://...',
+                keyboardType: TextInputType.url,
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? tr(context, ru: 'Обязательное поле', zh: '必填项')
+                    : null,
+              ),
+              const SizedBox(height: 12),
+
+              // ── Характеристики ─────────────
+              _FormField(
+                controller: _charCtrl,
+                label: tr(context, ru: 'Характеристики', zh: '规格'),
+                hint: tr(
+                  context,
+                  ru: 'Размер, цвет, модель...',
+                  zh: '尺寸、颜色、型号……',
+                ),
+                maxLines: 3,
+              ),
+              const SizedBox(height: 12),
+
+              // ── Количество + Цена ──────────
+              Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: _FormField(
+                      controller: _qtyCtrl,
+                      label: tr(context, ru: 'Кол-во', zh: '数量'),
+                      hint: '1',
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      validator: (v) {
+                        final n = int.tryParse(v ?? '');
+                        return (n == null || n < 1)
+                            ? tr(context, ru: 'Мин. 1', zh: '至少1件')
+                            : null;
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 3,
+                    child: _FormField(
+                      controller: _priceCtrl,
+                      label: tr(context, ru: 'Цена за шт. (¥)', zh: '单价（¥）'),
+                      hint: '0.00',
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                          RegExp(r'^\d+[.,]?\d{0,2}'),
+                        ),
+                      ],
+                      validator: (v) {
+                        final n = double.tryParse(
+                          (v ?? '').replaceAll(',', '.'),
+                        );
+                        return (n == null || n <= 0)
+                            ? tr(context, ru: 'Укажите цену', zh: '请输入价格')
+                            : null;
+                      },
+                    ),
                   ),
                 ],
               ),
-            ),
-            const SizedBox(height: 18),
+              const SizedBox(height: 14),
 
-            // ── Кнопка сохранения ─────────
-            SizedBox(
-              height: 52,
-              child: DecoratedBox(
+              // ── Фото ──────────────────────
+              Container(
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  gradient: _isSaving ? null : context.brandGradient,
-                  color: _isSaving
-                      ? context.brandPrimary.withValues(alpha: 0.55)
-                      : null,
+                  color: const Color(0xFFF8FAFC),
                   borderRadius: BorderRadius.circular(18),
-                  boxShadow: _isSaving
-                      ? null
-                      : [
-                          BoxShadow(
-                            color: context.brandPrimary.withValues(alpha: 0.18),
-                            blurRadius: 18,
-                            spreadRadius: -10,
-                            offset: const Offset(0, 10),
-                          ),
-                        ],
-                ),
-                child: FilledButton(
-                  onPressed: _isSaving ? null : _save,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    disabledBackgroundColor: Colors.transparent,
-                    foregroundColor: Colors.white,
-                    disabledForegroundColor: Colors.white,
-                    shadowColor: Colors.transparent,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.025),
                   ),
-                  child: _isSaving
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tr(context, ru: 'Фото товара', zh: '商品图片'),
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontFamily: 'Gilroy',
+                        fontSize: 13,
+                        height: 16 / 13,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      tr(
+                        context,
+                        ru: 'Можно добавить несколько снимков, чтобы сотруднику было проще выкупить товар.',
+                        zh: '可以添加多张图片，方便工作人员采购商品。',
+                      ),
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontFamily: 'Gilroy',
+                        fontSize: 11.5,
+                        height: 1.22,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        // Существующие фото (если редактирование)
+                        if (widget.existingItem != null)
+                          ...widget.existingItem!.photoUrls.map(
+                            (url) => _PhotoThumb(imageUrl: url),
                           ),
-                        )
-                      : Text(
-                          isEditing ? 'Сохранить изменения' : 'Добавить товар',
-                          style: const TextStyle(
-                            fontFamily: 'Gilroy',
-                            fontWeight: FontWeight.w900,
-                            fontSize: 15,
-                            height: 18 / 15,
+                        // Новые фото
+                        ..._pickedPhotos.asMap().entries.map(
+                          (e) => _PhotoThumb(
+                            bytes: e.value.bytes,
+                            onRemove: () => _removePhoto(e.key),
                           ),
                         ),
+                        // Кнопка добавления
+                        Material(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          child: InkWell(
+                            key: const Key('blank_item_add_photos'),
+                            onTap: _isPickingPhotos ? null : _pickPhotos,
+                            borderRadius: BorderRadius.circular(16),
+                            child: Container(
+                              width: 76,
+                              height: 76,
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: context.brandPrimary.withValues(
+                                    alpha: 0.18,
+                                  ),
+                                  width: 1.2,
+                                ),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Icon(
+                                Icons.add_a_photo_rounded,
+                                color: context.brandPrimary,
+                                size: 24,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 18),
+
+              if (_saveError != null) ...[
+                Text(_saveError!, style: const TextStyle(color: Colors.red)),
+                const SizedBox(height: 12),
+              ],
+              // ── Кнопка сохранения ─────────
+              SizedBox(
+                height: 52,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: _isSaving ? null : context.brandGradient,
+                    color: _isSaving
+                        ? context.brandPrimary.withValues(alpha: 0.55)
+                        : null,
+                    borderRadius: BorderRadius.circular(18),
+                    boxShadow: _isSaving
+                        ? null
+                        : [
+                            BoxShadow(
+                              color: context.brandPrimary.withValues(
+                                alpha: 0.18,
+                              ),
+                              blurRadius: 18,
+                              spreadRadius: -10,
+                              offset: const Offset(0, 10),
+                            ),
+                          ],
+                  ),
+                  child: FilledButton(
+                    onPressed: _isSaving ? null : _save,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      disabledBackgroundColor: Colors.transparent,
+                      foregroundColor: Colors.white,
+                      disabledForegroundColor: Colors.white,
+                      shadowColor: Colors.transparent,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                    ),
+                    child: _isSaving
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : Text(
+                            isEditing
+                                ? tr(
+                                    context,
+                                    ru: 'Сохранить изменения',
+                                    zh: '保存更改',
+                                  )
+                                : tr(context, ru: 'Добавить товар', zh: '添加商品'),
+                            style: const TextStyle(
+                              fontFamily: 'Gilroy',
+                              fontWeight: FontWeight.w900,
+                              fontSize: 15,
+                              height: 18 / 15,
+                            ),
+                          ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -1,4 +1,10 @@
 import '../../../core/network/api_client.dart';
+import '../../../core/media/browser_media_export.dart';
+import 'photo_viewer_share_draft.dart';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+import 'package:uuid/uuid.dart';
+import '../../../core/media/media_file_transfer.dart';
 import '../../../core/media/media_file_metadata.dart';
 import 'package:twoalogisticcabineuser/src/core/media/authenticated_media.dart';
 import 'dart:async';
@@ -6,7 +12,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import '../../../core/utils/file_download_helper.dart';
 import '../../../core/utils/locale_text.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
@@ -94,6 +99,20 @@ class PhotoViewerScreen extends ConsumerStatefulWidget {
 
 class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
   bool _isDownloading = false;
+  bool _isSharing = false;
+  final _browserShareDraft = PhotoViewerShareDraft(clearPreparedBrowserMedia);
+  String? get _preparedBrowserShareId => _browserShareDraft.preparedId;
+  String? _browserOperationId;
+  CancelToken? _transferCancel;
+  double? _transferProgress;
+  bool get _transferBusy => _isDownloading || _isSharing;
+
+  void _onTransferProgress(int received, int total) {
+    if (mounted) {
+      setState(() => _transferProgress = total > 0 ? received / total : null);
+    }
+  }
+
   double _swipeDy = 0;
   bool _galleryGestureBlocked = false;
   late PageController _pageController;
@@ -112,6 +131,8 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
 
   @override
   void dispose() {
+    if (!kIsWeb) _transferCancel?.cancel('viewer_closed');
+    _browserShareDraft.reset();
     _pageController.dispose();
     super.dispose();
   }
@@ -172,8 +193,84 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
     });
   }
 
+  Future<BrowserMediaExportResult> _exportInBrowser(
+    PhotoItem item, {
+    bool share = false,
+  }) async {
+    final api = ref.read(apiClientProvider);
+    final url = ApiConfig.getMediaUrl(item.url);
+    final path = authenticatedMediaPath(url);
+    String fingerprint(String value) =>
+        sha256.convert(utf8.encode(value)).toString();
+    final identity = fingerprint(await api.getMediaCacheIdentity());
+    final token = path == null ? null : await api.getToken();
+    if (identity != fingerprint(await api.getMediaCacheIdentity())) {
+      throw const BrowserMediaExportException('session_changed');
+    }
+    final id = const Uuid().v4();
+    _browserOperationId = id;
+    return beginBrowserMediaExport(
+      BrowserMediaExportRequest(
+        operationId: id,
+        url: path == null
+            ? url
+            : '${api.activeBaseUrl.replaceFirst(RegExp(r'/$'), '')}$path',
+        name: mediaFileName(item.url, isVideo: item.isVideo),
+        apiBase: api.activeBaseUrl,
+        token: token,
+        identity: identity,
+        getIdentity: () async => fingerprint(await api.getMediaCacheIdentity()),
+        share: share,
+        onProgress: _onTransferProgress,
+      ),
+    );
+  }
+
+  void _browserExportMessage(BrowserMediaExportException error) {
+    if (!mounted) return;
+    final message = switch (error.code) {
+      'cancelled' => tr(context, ru: 'Загрузка отменена', zh: '下载已取消'),
+      'session_changed' => tr(
+        context,
+        ru: 'Аккаунт изменился. Загрузка отменена.',
+        zh: '账号已变更，下载已取消。',
+      ),
+      'streaming_unavailable' => tr(
+        context,
+        ru: 'Браузер не смог начать загрузку. Обновите его или откройте файл в приложении.',
+        zh: '浏览器无法开始下载，请更新浏览器或在应用中打开文件。',
+      ),
+      'media_denied' => tr(
+        context,
+        ru: 'Файл недоступен. Проверьте доступ и повторите попытку.',
+        zh: '文件不可用，请检查权限后重试。',
+      ),
+      'share_expired' => tr(
+        context,
+        ru: 'Подготовьте файл для отправки ещё раз',
+        zh: '请重新准备要分享的文件',
+      ),
+      'busy' => tr(
+        context,
+        ru: 'Дождитесь завершения предыдущей загрузки',
+        zh: '请等待上一项下载完成',
+      ),
+      _ => tr(
+        context,
+        ru: 'Загрузка прервалась. Повторите попытку.',
+        zh: '下载中断，请重试。',
+      ),
+    };
+    _showStyledSnackBar(context, message, isError: error.code != 'cancelled');
+  }
+
   Future<void> _downloadMedia() async {
-    setState(() => _isDownloading = true);
+    if (_transferBusy) return;
+    _transferCancel = CancelToken();
+    setState(() {
+      _isDownloading = true;
+      _transferProgress = null;
+    });
     final api = ref.read(apiClientProvider);
     final companyName = ref.read(companyNameProvider);
     String? temporaryPath;
@@ -181,23 +278,16 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
       final currentItem = _currentItem;
 
       if (kIsWeb) {
-        final bytes = await loadMediaBytes(
-          api,
-          ApiConfig.getMediaUrl(currentItem.url),
-        );
+        _browserShareDraft.reset();
+        await _exportInBrowser(currentItem);
         if (!mounted) return;
-        final saved = await downloadFile(
-          bytes: bytes,
-          fileName: mediaFileName(
-            currentItem.url,
-            isVideo: currentItem.isVideo,
-          ),
-        );
-        if (!mounted) return;
-        if (!saved) throw StateError('media_not_saved');
         _showStyledSnackBar(
           context,
-          tr(context, ru: 'Файл сохранён', zh: '文件已保存'),
+          tr(
+            context,
+            ru: 'Файл передан браузеру. Проверьте загрузки.',
+            zh: '文件已交给浏览器，请查看下载。',
+          ),
         );
         return;
       }
@@ -223,12 +313,17 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
       String savePath;
       final fullUrl = ApiConfig.getMediaUrl(currentItem.url);
 
-      final bytes = await loadMediaBytes(api, fullUrl);
       final tempDir = await getTemporaryDirectory();
       savePath =
           '${tempDir.path}/${DateTime.now().microsecondsSinceEpoch}_${mediaFileName(currentItem.url, isVideo: currentItem.isVideo)}';
       temporaryPath = savePath;
-      await File(savePath).writeAsBytes(bytes);
+      await transferMediaToFile(
+        api,
+        fullUrl,
+        File(savePath),
+        cancelToken: _transferCancel!,
+        onProgress: _onTransferProgress,
+      );
       if (!mounted) return;
 
       // Сохраняем в галерею
@@ -241,6 +336,8 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
       if (mounted) {
         _showStyledSnackBar(context, 'Сохранено в галерею');
       }
+    } on BrowserMediaExportException catch (error) {
+      _browserExportMessage(error);
     } on DioException catch (e) {
       if (mounted) {
         String message = 'Ошибка загрузки';
@@ -262,12 +359,23 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
         } catch (_) {}
       }
       if (mounted) {
-        setState(() => _isDownloading = false);
+        setState(() {
+          _isDownloading = false;
+          _browserOperationId = null;
+        });
       }
     }
   }
 
   Future<void> _shareMedia(BuildContext context) async {
+    if (_transferBusy) return;
+    final shareRevision = _browserShareDraft.revision;
+    _transferCancel = CancelToken();
+    setState(() {
+      _isSharing = true;
+      _transferProgress = null;
+    });
+    String? temporaryPath;
     final api = ref.read(apiClientProvider);
     try {
       final currentItem = _currentItem;
@@ -276,21 +384,66 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
       // Получаем box ДО async операций
       final box = context.findRenderObject() as RenderBox?;
 
-      final bytes = await loadMediaBytes(api, fullUrl);
+      final XFile shareFile;
+      if (kIsWeb) {
+        final prepared = _preparedBrowserShareId;
+        final result = prepared == null
+            ? await _exportInBrowser(currentItem, share: true)
+            : await sharePreparedBrowserMedia(prepared);
+        if (!mounted || !context.mounted) {
+          if (result.preparedId != null) {
+            clearPreparedBrowserMedia(result.preparedId!);
+          }
+          return;
+        }
+        if (!_browserShareDraft.accept(shareRevision, result.preparedId)) {
+          return;
+        }
+        setState(() {});
+        if (result.kind == BrowserMediaExportKind.shareReady) {
+          _showStyledSnackBar(
+            context,
+            tr(
+              context,
+              ru: 'Файл готов. Нажмите «Отправить файл», чтобы выбрать приложение.',
+              zh: '文件已准备好，请点击“发送文件”选择应用。',
+            ),
+          );
+        } else if (result.kind == BrowserMediaExportKind.downloaded) {
+          _showStyledSnackBar(
+            context,
+            tr(
+              context,
+              ru: 'Файл передан в загрузки. Отправьте его из приложения «Файлы» или папки загрузок.',
+              zh: '文件已交给下载，请从“文件”应用或下载文件夹中分享。',
+            ),
+          );
+        }
+        return;
+      } else {
+        final tempDir = await getTemporaryDirectory();
+        temporaryPath =
+            '${tempDir.path}/${DateTime.now().microsecondsSinceEpoch}_${mediaFileName(currentItem.url, isVideo: currentItem.isVideo)}';
+        await transferMediaToFile(
+          api,
+          fullUrl,
+          File(temporaryPath),
+          cancelToken: _transferCancel!,
+          onProgress: _onTransferProgress,
+        );
+        shareFile = XFile(
+          temporaryPath,
+          mimeType: mediaMimeType(
+            currentItem.url,
+            isVideo: currentItem.isVideo,
+          ),
+        );
+      }
       if (!mounted) return;
 
       // Шарим файл (sharePositionOrigin нужен для iPad)
       await Share.shareXFiles(
-        [
-          XFile.fromData(
-            bytes,
-            mimeType: mediaMimeType(
-              currentItem.url,
-              isVideo: currentItem.isVideo,
-            ),
-            name: mediaFileName(currentItem.url, isVideo: currentItem.isVideo),
-          ),
-        ],
+        [shareFile],
         text: currentItem.trackingNumber != null
             ? 'Трек: ${currentItem.trackingNumber}'
             : null,
@@ -298,6 +451,11 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
             ? box.localToGlobal(Offset.zero) & box.size
             : const Rect.fromLTWH(0, 0, 100, 100),
       );
+    } on BrowserMediaExportException catch (error) {
+      if (mounted && shareRevision == _browserShareDraft.revision) {
+        setState(_browserShareDraft.reset);
+      }
+      _browserExportMessage(error);
     } on DioException catch (e) {
       if (!context.mounted) return;
       String message = 'Ошибка';
@@ -310,6 +468,18 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
     } catch (e) {
       if (!context.mounted) return;
       _showStyledSnackBar(context, 'Не удалось поделиться', isError: true);
+    } finally {
+      if (temporaryPath != null) {
+        try {
+          await File(temporaryPath).delete();
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(() {
+          _isSharing = false;
+          _browserOperationId = null;
+        });
+      }
     }
   }
 
@@ -414,6 +584,7 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
                         itemCount: widget.allPhotos!.length,
                         onPageChanged: (index) {
                           setState(() {
+                            _browserShareDraft.reset();
                             _currentIndex = index;
                             _galleryGestureBlocked = false;
                             _swipeDy = 0;
@@ -452,6 +623,11 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
                   child: Row(
                     children: [
                       IconButton(
+                        tooltip: tr(
+                          context,
+                          ru: 'Закрыть просмотр',
+                          zh: '关闭预览',
+                        ),
                         onPressed: () => Navigator.of(context).pop(),
                         icon: const Icon(
                           Icons.close_rounded,
@@ -483,7 +659,8 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
                         ),
                       if (hasMultiplePhotos) const Spacer(),
                       IconButton(
-                        onPressed: _isDownloading ? null : _downloadMedia,
+                        tooltip: tr(context, ru: 'Сохранить файл', zh: '保存文件'),
+                        onPressed: _transferBusy ? null : _downloadMedia,
                         icon: _isDownloading
                             ? const SizedBox(
                                 width: 20,
@@ -503,7 +680,16 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
                       ),
                       const SizedBox(width: 8),
                       IconButton(
-                        onPressed: () => _shareMedia(context),
+                        tooltip: tr(
+                          context,
+                          ru: _preparedBrowserShareId == null
+                              ? 'Поделиться файлом'
+                              : 'Отправить файл',
+                          zh: _preparedBrowserShareId == null ? '分享文件' : '发送文件',
+                        ),
+                        onPressed: _transferBusy
+                            ? null
+                            : () => _shareMedia(context),
                         icon: const Icon(
                           Icons.share_rounded,
                           color: Colors.white,
@@ -516,6 +702,55 @@ class _PhotoViewerScreenState extends ConsumerState<PhotoViewerScreen> {
                   ),
                 ),
               ),
+              if (_transferBusy)
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  top: MediaQuery.paddingOf(context).top + 82,
+                  child: Material(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          LinearProgressIndicator(
+                            value: _transferProgress,
+                            semanticsLabel: tr(
+                              context,
+                              ru: 'Загрузка файла',
+                              zh: '正在下载文件',
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              if (kIsWeb && _browserOperationId != null) {
+                                cancelBrowserMediaExport(_browserOperationId!);
+                              } else {
+                                _transferCancel?.cancel('user_cancelled');
+                              }
+                            },
+                            child: Text(
+                              tr(context, ru: 'Отменить загрузку', zh: '取消下载'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              if (_preparedBrowserShareId != null && !_transferBusy)
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  top: MediaQuery.paddingOf(context).top + 82,
+                  child: FilledButton.icon(
+                    onPressed: () => _shareMedia(context),
+                    icon: const Icon(Icons.ios_share),
+                    label: Text(tr(context, ru: 'Отправить файл', zh: '发送文件')),
+                  ),
+                ),
               // Bottom info
               if (widget.item.trackingNumber != null ||
                   widget.item.assemblyNumber != null)

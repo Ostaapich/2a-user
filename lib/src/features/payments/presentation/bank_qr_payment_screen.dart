@@ -1,4 +1,5 @@
-import 'dart:ui' as ui;
+import '../utils/payment_qr_image.dart';
+import '../../../core/services/analytics_service.dart';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -25,7 +26,7 @@ import 'payment_receipt_picker.dart';
 /// Bank QR — модалка оплаты счёта в рублях.
 ///
 /// На открытии стартует QR-платёж, показывает сумму/QR/назначение,
-/// принимает чек и после «Я оплатил» переводит счёт в «На проверке».
+/// после выбора чека отправляет его и переводит счёт в «На проверке».
 class BankQrPaymentSheet extends ConsumerStatefulWidget {
   final String invoiceId;
   final String invoiceNumber;
@@ -45,6 +46,7 @@ class BankQrPaymentSheet extends ConsumerStatefulWidget {
 }
 
 class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
+  bool get _receiptOnly => widget.selection?.receiptOnly == true;
   bool _loading = true;
   String? _error;
   BankQrPaymentResult? _result;
@@ -60,6 +62,10 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
   @override
   void initState() {
     super.initState();
+    AnalyticsService.trackFunnel(
+      WorkflowAction.paymentQrStart,
+      WorkflowStage.viewed,
+    );
     Future<void>.microtask(_start);
   }
 
@@ -70,7 +76,7 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
         await ref.read(paymentOperatorStatusProvider.future) ??
         PaymentOperatorStatus.workingFallback;
     if (!mounted) return;
-    if (operatorStatus.sleeping) {
+    if (operatorStatus.sleeping && widget.selection?.paymentId == null) {
       setState(() {
         _loading = false;
         _error = null;
@@ -83,15 +89,16 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
     });
     try {
       final selection = widget.selection;
-      final res = selection != null && selection.method != 'bank_qr'
+      final existing = selection?.paymentId != null;
+      final res = existing
           ? BankQrPaymentResult(
-              paymentId: selection.paymentId!,
+              paymentId: selection!.paymentId!,
               invoiceId: int.parse(widget.invoiceId),
               invoiceNumber: widget.invoiceNumber,
-              amountRub: 0,
-              sumKopecks: 0,
-              purpose: '',
-              qrPayload: '',
+              amountRub: selection.method == 'bank_qr' ? selection.amount : 0,
+              sumKopecks: selection.sumKopecks ?? 0,
+              purpose: selection.purpose ?? '',
+              qrPayload: selection.qrPayload ?? '',
               status: 'pending',
             )
           : await ref
@@ -109,11 +116,15 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
         _result = res;
         _loading = false;
       });
-      if (!_timingWarningShown &&
+      if (!_receiptOnly &&
+          !_timingWarningShown &&
           widget.selection?.method != 'usdt_trc20' &&
           widget.selection?.method != 'alipay') {
         _timingWarningShown = true;
-        await showPaymentQrTimingWarning(context);
+        await showPaymentQrTimingWarning(
+          context,
+          paymentAttemptKey: 'invoice:${widget.invoiceId}:${res.paymentId}',
+        );
       }
     } on DioException catch (e) {
       if (!mounted) return;
@@ -139,7 +150,7 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
 
   Future<void> _downloadQr() async {
     final res = _result;
-    if (res == null || _downloadingQr) return;
+    if (res == null || _downloadingQr || _receiptOnly) return;
     setState(() => _downloadingQr = true);
     try {
       final foreignQr = widget.selection?.qrImageUrl;
@@ -149,8 +160,12 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
           ApiConfig.getMediaUrl(foreignQr),
         );
         if (!mounted) return;
+        final exportBytes = widget.selection?.method == 'bank_qr'
+            ? await createPaymentQrImage(imageBytes: bytes)
+            : bytes;
+        if (!mounted) return;
         final result = await saveImageToGallery(
-          bytes: bytes,
+          bytes: exportBytes,
           fileName: _qrFileName,
         );
         if (!mounted) return;
@@ -163,32 +178,10 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
         );
         return;
       }
-      final painter = QrPainter(
-        data: res.qrPayload,
-        version: QrVersions.auto,
-        gapless: true,
-      );
-      const imageSize = 1024.0;
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      canvas.drawColor(Colors.white, BlendMode.src);
-      painter.paint(canvas, const Size(imageSize, imageSize));
-      final image = await recorder.endRecording().toImage(
-        imageSize.toInt(),
-        imageSize.toInt(),
-      );
-      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      final bytes = await createPaymentQrImage(payload: res.qrPayload);
       if (!mounted) return;
-      if (data == null) {
-        AppToast.show(
-          context,
-          tr(context, ru: 'Не удалось подготовить QR', zh: '无法生成二维码'),
-          isError: true,
-        );
-        return;
-      }
       final saveResult = await saveImageToGallery(
-        bytes: data.buffer.asUint8List(),
+        bytes: bytes,
         fileName: _qrFileName,
       );
       if (!mounted) return;
@@ -225,13 +218,28 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
   }
 
   Future<void> _pickReceipt() async {
-    final receipt = await pickPaymentReceipt(context);
-    if (!mounted || receipt == null) return;
-    setState(() {
-      _fileBytes = receipt.bytes;
-      _fileName = receipt.fileName;
-      _fileMime = receipt.mimeType;
-    });
+    if (_uploading) return;
+    setState(() => _uploading = true);
+    try {
+      final receipt = await pickPaymentReceipt(context);
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      if (receipt == null) return;
+      setState(() {
+        _fileBytes = receipt.bytes;
+        _fileName = receipt.fileName;
+        _fileMime = receipt.mimeType;
+      });
+      await _confirmPaid();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      AppToast.show(
+        context,
+        tr(context, ru: 'Не удалось выбрать чек', zh: '无法选择付款凭证'),
+        isError: true,
+      );
+    }
   }
 
   Future<void> _confirmPaid() async {
@@ -250,7 +258,9 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
           );
       if (!mounted) return;
       setState(() => _uploading = false);
-      if (upload == null) {
+      if (upload == null ||
+          upload.invoiceStatus != 'payment_review' ||
+          upload.paymentId != res.paymentId) {
         AppToast.show(
           context,
           tr(context, ru: 'Не удалось отправить чек', zh: '无法发送凭证'),
@@ -263,12 +273,22 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
         tr(context, ru: 'Чек отправлен на проверку', zh: '凭证已提交审核'),
       );
       Navigator.of(context).pop(true);
-    } on DioException {
+    } catch (error) {
       if (!mounted) return;
       setState(() => _uploading = false);
       AppToast.show(
         context,
-        tr(context, ru: 'Ошибка отправки чека', zh: '发送凭证出错'),
+        error is DioException && error.response?.statusCode == 409
+            ? tr(
+                context,
+                ru: 'Платёж изменился. Обновите данные и проверьте статус чека.',
+                zh: '付款状态已变更，请刷新并查看凭证状态。',
+              )
+            : tr(
+                context,
+                ru: 'Ошибка отправки чека. Повторите отправку.',
+                zh: '发送凭证出错，请重试。',
+              ),
         isError: true,
       );
     }
@@ -309,7 +329,7 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
                 keyboardDismissBehavior:
                     ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: operatorsSleeping
+                child: operatorsSleeping && _result == null
                     ? const PaymentOperatorSleepingNotice()
                     : _loading
                     ? const _BankQrLoadingCard()
@@ -320,7 +340,7 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
             ),
             Padding(
               padding: EdgeInsets.fromLTRB(16, 10, 16, 12 + bottomPadding),
-              child: operatorsSleeping
+              child: operatorsSleeping && _result == null
                   ? _BankQrSecondaryButton(
                       label: tr(context, ru: 'Закрыть', zh: '关闭'),
                       icon: Icons.close_rounded,
@@ -368,9 +388,36 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (!_receiptOnly) const PaymentQrTimingNotice(),
+        if (_receiptOnly)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              tr(
+                context,
+                ru: 'Новые переводы этим способом сейчас недоступны. Если вы уже оплатили ранее созданную оплату, приложите чек для проверки.',
+                zh: '此方式暂不接受新的转账。如果您已支付先前创建的付款，请附上凭证以供审核。',
+              ),
+            ),
+          ),
+        if (paymentOperatorStatusOrWorking(
+          ref.watch(paymentOperatorStatusProvider),
+        ).sleeping)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              tr(
+                context,
+                ru: 'Операторы отдыхают. Если вы уже оплатили, отправьте чек сейчас. Его проверят после возобновления работы.',
+                zh: '付款人员正在休息。如果您已经付款，请立即提交凭证。恢复工作后将进行审核。',
+              ),
+            ),
+          ),
         _BankQrSectionCard(
           icon: Icons.payments_rounded,
-          title: tr(context, ru: 'Сумма к оплате', zh: '应付金额'),
+          title: _receiptOnly
+              ? tr(context, ru: 'Сумма ранее созданной оплаты', zh: '先前付款金额')
+              : tr(context, ru: 'Сумма к оплате', zh: '应付金额'),
           child: Text(
             widget.selection?.method == 'usdt_trc20' ||
                     widget.selection?.method == 'alipay'
@@ -386,136 +433,144 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
           ),
         ),
         const SizedBox(height: 12),
-        _BankQrSectionCard(
-          icon: Icons.qr_code_2_rounded,
-          title: tr(context, ru: 'QR для оплаты', zh: '付款二维码'),
-          child: Column(
-            children: [
-              Center(
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(22),
-                    border: Border.all(
-                      color: Colors.black.withValues(alpha: 0.04),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.06),
-                        blurRadius: 24,
-                        spreadRadius: -16,
-                        offset: const Offset(0, 14),
+        if (!_receiptOnly)
+          _BankQrSectionCard(
+            icon: Icons.qr_code_2_rounded,
+            title: tr(context, ru: 'QR для оплаты', zh: '付款二维码'),
+            child: Column(
+              children: [
+                if (widget.selection == null ||
+                    widget.selection!.method == 'bank_qr')
+                  const PaymentRecipientWarning(),
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: 0.04),
                       ),
-                    ],
-                  ),
-                  child: SizedBox(
-                    width: 220,
-                    child: widget.selection?.qrImageUrl != null
-                        ? Image(
-                            image: authenticatedImageProvider(
-                              context,
-                              ApiConfig.getMediaUrl(
-                                widget.selection!.qrImageUrl!,
-                              ),
-                            ),
-                            width: 220,
-                            height: 220,
-                            fit: BoxFit.contain,
-                            frameBuilder: (context, child, frame, synchronous) {
-                              if (synchronous || frame != null) return child;
-                              return SizedBox(
-                                width: 220,
-                                height: 220,
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    const CircularProgressIndicator(),
-                                    const SizedBox(height: 12),
-                                    Text(
-                                      tr(
-                                        context,
-                                        ru: 'Загрузка QR-кода…',
-                                        zh: '正在加载二维码…',
-                                      ),
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(
-                                        color: AppColors.textSecondary,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                  ],
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.06),
+                          blurRadius: 24,
+                          spreadRadius: -16,
+                          offset: const Offset(0, 14),
+                        ),
+                      ],
+                    ),
+                    child: SizedBox(
+                      width: 220,
+                      child: widget.selection?.qrImageUrl != null
+                          ? Image(
+                              image: authenticatedImageProvider(
+                                context,
+                                ApiConfig.getMediaUrl(
+                                  widget.selection!.qrImageUrl!,
                                 ),
-                              );
-                            },
-                            errorBuilder: (_, error, stack) => SizedBox(
+                              ),
                               width: 220,
                               height: 220,
-                              child: Center(
-                                child: Text(
-                                  tr(
-                                    context,
-                                    ru: 'Не удалось загрузить QR',
-                                    zh: '无法加载二维码',
+                              fit: BoxFit.contain,
+                              frameBuilder:
+                                  (context, child, frame, synchronous) {
+                                    if (synchronous || frame != null) {
+                                      return child;
+                                    }
+                                    return SizedBox(
+                                      width: 220,
+                                      height: 220,
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          const CircularProgressIndicator(),
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            tr(
+                                              context,
+                                              ru: 'Загрузка QR-кода…',
+                                              zh: '正在加载二维码…',
+                                            ),
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(
+                                              color: AppColors.textSecondary,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                              errorBuilder: (_, error, stack) => SizedBox(
+                                width: 220,
+                                height: 220,
+                                child: Center(
+                                  child: Text(
+                                    tr(
+                                      context,
+                                      ru: 'Не удалось загрузить QR',
+                                      zh: '无法加载二维码',
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            )
+                          : QrImageView(
+                              data: res.qrPayload,
+                              version: QrVersions.auto,
+                              size: 220,
+                              backgroundColor: Colors.white,
+                              errorStateBuilder: (context, error) => SizedBox(
+                                width: 220,
+                                height: 220,
+                                child: Center(
+                                  child: Text(
+                                    tr(context, ru: 'Ошибка QR', zh: 'QR 错误'),
                                   ),
                                 ),
                               ),
                             ),
-                          )
-                        : QrImageView(
-                            data: res.qrPayload,
-                            version: QrVersions.auto,
-                            size: 220,
-                            backgroundColor: Colors.white,
-                            errorStateBuilder: (context, error) => SizedBox(
-                              width: 220,
-                              height: 220,
-                              child: Center(
-                                child: Text(
-                                  tr(context, ru: 'Ошибка QR', zh: 'QR 错误'),
-                                ),
-                              ),
-                            ),
-                          ),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                tr(
-                  context,
-                  ru: widget.selection?.method == 'alipay'
-                      ? 'Отсканируйте QR в Alipay'
-                      : widget.selection?.method == 'usdt_trc20'
-                      ? 'Отправляйте только USDT по сети TRC20'
-                      : 'Отсканируйте QR в приложении банка',
-                  zh: widget.selection?.method == 'alipay'
-                      ? '请使用支付宝扫描二维码'
-                      : widget.selection?.method == 'usdt_trc20'
-                      ? '仅通过 TRC20 网络发送 USDT'
-                      : '在银行应用中扫描二维码',
+                const SizedBox(height: 10),
+                Text(
+                  tr(
+                    context,
+                    ru: widget.selection?.method == 'alipay'
+                        ? 'Отсканируйте QR в Alipay'
+                        : widget.selection?.method == 'usdt_trc20'
+                        ? 'Отправляйте только USDT по сети TRC20'
+                        : 'Отсканируйте QR в приложении банка',
+                    zh: widget.selection?.method == 'alipay'
+                        ? '请使用支付宝扫描二维码'
+                        : widget.selection?.method == 'usdt_trc20'
+                        ? '仅通过 TRC20 网络发送 USDT'
+                        : '在银行应用中扫描二维码',
+                  ),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontFamily: 'Gilroy',
+                    fontSize: 12.5,
+                    height: 1.2,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontFamily: 'Gilroy',
-                  fontSize: 12.5,
-                  height: 1.2,
-                  fontWeight: FontWeight.w700,
+                const SizedBox(height: 12),
+                _BankQrSecondaryButton(
+                  label: _downloadingQr
+                      ? tr(context, ru: 'Готовим файл…', zh: '正在准备文件…')
+                      : tr(context, ru: 'Сохранить QR-код', zh: '保存二维码'),
+                  icon: Icons.save_alt_rounded,
+                  onTap: _downloadingQr ? null : _downloadQr,
                 ),
-              ),
-              const SizedBox(height: 12),
-              _BankQrSecondaryButton(
-                label: _downloadingQr
-                    ? tr(context, ru: 'Готовим файл…', zh: '正在准备文件…')
-                    : tr(context, ru: 'Сохранить QR-код', zh: '保存二维码'),
-                icon: Icons.save_alt_rounded,
-                onTap: _downloadingQr ? null : _downloadQr,
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        if (widget.selection?.walletAddress != null) ...[
+        if (!_receiptOnly && widget.selection?.walletAddress != null) ...[
           const SizedBox(height: 12),
           _BankQrSectionCard(
             icon: Icons.account_balance_wallet_outlined,
@@ -561,8 +616,12 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
               Text(
                 tr(
                   context,
-                  ru: 'Оплатите по QR, приложите чек и нажмите «Я оплатил». После этого счёт уйдёт сотруднику на проверку.',
-                  zh: '扫码付款后上传凭证并点击「我已付款」。账单会提交给工作人员审核。',
+                  ru: _receiptOnly
+                      ? 'Приложите чек ранее выполненного перевода. После успешной отправки счёт уйдёт сотруднику на проверку.'
+                      : 'Оплатите выбранным способом и приложите чек. После успешной отправки счёт уйдёт сотруднику на проверку.',
+                  zh: _receiptOnly
+                      ? '请附上先前转账的凭证，发送成功后账单将提交给工作人员审核。'
+                      : '付款后附上凭证，发送成功后账单将提交给工作人员审核。',
                 ),
                 style: const TextStyle(
                   color: AppColors.textSecondary,
@@ -573,17 +632,12 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
                 ),
               ),
               const SizedBox(height: 12),
-              _BankQrSecondaryButton(
-                label: _fileBytes == null
-                    ? tr(
-                        context,
-                        ru: 'Приложить чек (фото/PDF)',
-                        zh: '附上凭证（图片/PDF）',
-                      )
-                    : tr(context, ru: 'Заменить чек', zh: '更换凭证'),
-                icon: Icons.attach_file_rounded,
-                onTap: _uploading ? null : _pickReceipt,
-              ),
+              if (_fileBytes != null)
+                _BankQrSecondaryButton(
+                  label: tr(context, ru: 'Заменить чек', zh: '更换凭证'),
+                  icon: Icons.attach_file_rounded,
+                  onTap: _uploading ? null : _pickReceipt,
+                ),
               if (_fileBytes != null) ...[
                 const SizedBox(height: 10),
                 _receiptPreview(),
@@ -616,10 +670,14 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
       );
     }
     return _BankQrPrimaryButton(
-      label: tr(context, ru: 'Я оплатил', zh: '我已付款'),
+      label: _fileBytes == null
+          ? tr(context, ru: 'Приложить чек', zh: '附加付款凭证')
+          : tr(context, ru: 'Повторить отправку', zh: '重新发送'),
       icon: Icons.check_circle_outline_rounded,
       isLoading: _uploading,
-      onTap: (_fileBytes != null && !_uploading) ? _confirmPaid : null,
+      onTap: _uploading
+          ? null
+          : (_fileBytes == null ? _pickReceipt : _confirmPaid),
     );
   }
 

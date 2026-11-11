@@ -1,3 +1,4 @@
+import '../../../core/ui/scroll_to_top_button.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_target.dart';
 import 'dart:ui';
 
@@ -13,6 +14,7 @@ import '../../../core/logging/client_log_service.dart';
 import '../../../core/ui/app_background.dart';
 import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/app_layout.dart';
+import '../../../core/utils/locale_text.dart';
 import '../application/shell_branch_provider.dart';
 import '../../more/presentation/more_sheet.dart';
 import 'desktop_side_nav.dart';
@@ -30,6 +32,8 @@ final bottomNavVisibleProvider =
     NotifierProvider<BottomNavVisibleNotifier, bool>(
       BottomNavVisibleNotifier.new,
     );
+
+const _bottomNavigationHeight = 68.0;
 
 double _compactShellScale(BuildContext context) {
   return AppLayout.compactScale(context);
@@ -60,15 +64,23 @@ class AppShell extends ConsumerWidget {
         ? SystemUiOverlayStyle.light
         : SystemUiOverlayStyle.dark;
     final bottomNavVisible = ref.watch(bottomNavVisibleProvider);
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     final useSideNavigation = AppLayout.useSideNavigation(context);
     final sideNavExpanded = ref.watch(desktopSideNavExpandedProvider);
     final sideNavWidth = AppLayout.sideNavWidthFor(sideNavExpanded);
     final compactScale = AppLayout.compactScale(context);
+    final safeBottom = MediaQuery.paddingOf(context).bottom;
+    final navigationBottomMargin = AppLayout.bottomBarBottomMarginFor(context);
+    final scrollButtonObstruction =
+        safeBottom +
+        (!useSideNavigation && !keyboardVisible && bottomNavVisible
+            ? _bottomNavigationHeight * compactScale + navigationBottomMargin
+            : 0);
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: overlayStyle.copyWith(statusBarColor: Colors.transparent),
       child: Scaffold(
-        resizeToAvoidBottomInset: false,
+        resizeToAvoidBottomInset: true,
         extendBody: true,
         body: GestureDetector(
           behavior: HitTestBehavior.opaque,
@@ -135,9 +147,22 @@ class AppShell extends ConsumerWidget {
                   left: useSideNavigation ? sideNavWidth : 0,
                   top: statusTop,
                 ),
-                child: AppLayout.constrainNavigationContent(
-                  context,
-                  navigationShell,
+                // Keep raw safe-area data for the floating bar siblings,
+                // but remove the status inset already consumed by the body.
+                child: Builder(
+                  builder: (bodyContext) => MediaQuery.removePadding(
+                    // Preserve the keyboard inset already consumed by Scaffold.
+                    context: bodyContext,
+                    removeTop: true,
+                    child: ScrollToTopViewport(
+                      bottomObstruction: scrollButtonObstruction,
+                      safeAreaBottom: safeBottom,
+                      child: AppLayout.constrainNavigationContent(
+                        bodyContext,
+                        navigationShell,
+                      ),
+                    ),
+                  ),
                 ),
               ),
               if (useSideNavigation)
@@ -165,7 +190,7 @@ class AppShell extends ConsumerWidget {
                   right: 0,
                   child: AppFloatingTopBar(title: title, showBack: false),
                 ),
-              if (!useSideNavigation)
+              if (!useSideNavigation && !keyboardVisible)
                 Positioned(
                   left: 0,
                   right: 0,
@@ -183,7 +208,7 @@ class AppShell extends ConsumerWidget {
                           14 * compactScale,
                           0,
                           14 * compactScale,
-                          10 * compactScale,
+                          navigationBottomMargin,
                         ),
                         child: Center(
                           child: ConstrainedBox(
@@ -358,7 +383,34 @@ class _PixsoBottomNavState extends State<_PixsoBottomNav> {
                                 icon: isSelected
                                     ? item.selectedIcon
                                     : item.icon,
-                                label: item.label,
+                                label: tr(
+                                  context,
+                                  ru: item.label == 'Чат'
+                                      ? 'Чат поддержки'
+                                      : item.label,
+                                  zh: [
+                                    '首页',
+                                    '照片',
+                                    '包裹',
+                                    '账单',
+                                    '客服聊天',
+                                    '更多',
+                                  ][index],
+                                ),
+                                visibleLabel: tr(
+                                  context,
+                                  ru: item.label == 'Чат'
+                                      ? 'Помощь'
+                                      : item.label,
+                                  zh: [
+                                    '首页',
+                                    '照片',
+                                    '包裹',
+                                    '账单',
+                                    '客服',
+                                    '更多',
+                                  ][index],
+                                ),
                                 isSelected: isSelected,
                                 size: buttonSize,
                                 onTap: () {
@@ -430,7 +482,7 @@ class _BottomNavSurface extends StatelessWidget {
     final scale = _compactShellScale(context);
     final radius = 24 * scale;
     return Container(
-      height: 68 * scale,
+      height: _bottomNavigationHeight * scale,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(radius),
         boxShadow: [
@@ -471,6 +523,7 @@ class _BottomNavSurface extends StatelessWidget {
 class _BottomNavButton extends StatelessWidget {
   final IconData icon;
   final String label;
+  final String visibleLabel;
   final bool isSelected;
   final double size;
   final VoidCallback onTap;
@@ -478,6 +531,7 @@ class _BottomNavButton extends StatelessWidget {
   const _BottomNavButton({
     required this.icon,
     required this.label,
+    required this.visibleLabel,
     required this.isSelected,
     required this.size,
     required this.onTap,
@@ -501,7 +555,7 @@ class _BottomNavButton extends StatelessWidget {
               duration: const Duration(milliseconds: 220),
               curve: Curves.easeOutCubic,
               width: size,
-              height: size,
+              height: size < 44 ? 44 : size,
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 gradient: isSelected ? context.brandGradient : null,
@@ -523,20 +577,39 @@ class _BottomNavButton extends StatelessWidget {
                       ]
                     : null,
               ),
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 160),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, animation) => FadeTransition(
-                  opacity: animation,
-                  child: ScaleTransition(scale: animation, child: child),
-                ),
-                child: Icon(
-                  icon,
-                  key: ValueKey('${icon.codePoint}-$isSelected'),
-                  size: size * (isSelected ? 0.50 : 0.46),
-                  color: isSelected ? Colors.white : context.brandPrimary,
-                ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 160),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeInCubic,
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: ScaleTransition(scale: animation, child: child),
+                    ),
+                    child: Icon(
+                      icon,
+                      key: ValueKey('${icon.codePoint}-$isSelected'),
+                      size: 21,
+                      color: isSelected ? Colors.white : context.brandPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  ExcludeSemantics(
+                    child: Text(
+                      visibleLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 9.5,
+                        height: 1.05,
+                        fontWeight: FontWeight.w700,
+                        color: isSelected ? Colors.white : context.brandPrimary,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

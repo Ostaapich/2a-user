@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_keyboard_dismiss.dart';
+import '../keyboard/keyboard_form_probe.dart';
+import '../../helpers/keyboard_acceptance.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -68,6 +71,7 @@ Future<void> _pumpProducts(
   required Locale locale,
   bool embedded = false,
   NavigatorObserver? observer,
+  TargetPlatform platform = TargetPlatform.android,
 }) async {
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.binding.setSurfaceSize(size);
@@ -82,7 +86,9 @@ Future<void> _pumpProducts(
         ),
       ],
       child: MaterialApp(
+        builder: (_, child) => AppKeyboardDismissRegion(child: child!),
         navigatorObservers: [if (observer != null) observer],
+        theme: ThemeData(platform: platform),
         locale: locale,
         localizationsDelegates: const [
           GlobalMaterialLocalizations.delegate,
@@ -99,6 +105,30 @@ Future<void> _pumpProducts(
 }
 
 void main() {
+  setUpAll(loadKeyboardAcceptanceFonts);
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets(
+      '$platform _pumpProducts actual create editor every field320height',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetViewInsets);
+        await _pumpProducts(
+          tester,
+          size: const Size(390, 640),
+          platform: platform,
+          locale: const Locale('ru'),
+        );
+        expect(await probeCurrentFormEditors(tester), 1);
+        await tester.ensureVisible(find.byTooltip('Добавить товар'));
+        await tester.tap(find.byTooltip('Добавить товар'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(await probeCurrentFormEditors(tester, minimumFields: 5), 5);
+      },
+    );
+  }
+
   testWidgets('embedded product tab omits the duplicate hero', (tester) async {
     await _pumpProducts(
       tester,

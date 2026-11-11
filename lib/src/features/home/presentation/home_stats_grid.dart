@@ -5,6 +5,8 @@ import '../../../core/utils/locale_text.dart';
 
 class HomeStatsGrid extends StatelessWidget {
   final String tracksValue;
+  final String? pendingTracksValue;
+  final String? warehouseTracksValue;
   final String assembliesValue;
   final String invoicesValue;
   final String bonusKgValue;
@@ -16,6 +18,8 @@ class HomeStatsGrid extends StatelessWidget {
   const HomeStatsGrid({
     super.key,
     required this.tracksValue,
+    this.pendingTracksValue,
+    this.warehouseTracksValue,
     required this.assembliesValue,
     required this.invoicesValue,
     required this.bonusKgValue,
@@ -28,13 +32,24 @@ class HomeStatsGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      // At least 112 logical pixels per card, adjusted for accessibility text.
-      final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
-      final threeColumns = constraints.maxWidth >= 352 * textScale;
       final cards = [
         _HomeStatCard(
           title: tr(context, ru: 'Треки', zh: '运单'),
           value: tracksValue,
+          details: [
+            if (pendingTracksValue != null)
+              tr(
+                context,
+                ru: 'В ожидании: $pendingTracksValue',
+                zh: '待入库：$pendingTracksValue',
+              ),
+            if (warehouseTracksValue != null)
+              tr(
+                context,
+                ru: 'На складе: $warehouseTracksValue',
+                zh: '已入库：$warehouseTracksValue',
+              ),
+          ],
           icon: Icons.local_shipping_rounded,
           onTap: onTracksTap,
         ),
@@ -57,21 +72,23 @@ class HomeStatsGrid extends StatelessWidget {
           onTap: onBonusKgTap,
         ),
       ];
-      Widget row(List<Widget> items) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          for (var i = 0; i < items.length; i++) ...[
-            if (i > 0) const SizedBox(width: 8),
-            Expanded(child: items[i]),
+      Widget row(List<Widget> items) => IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var i = 0; i < items.length; i++) ...[
+              if (i > 0) const SizedBox(width: 8),
+              Expanded(child: items[i]),
+            ],
           ],
-        ],
+        ),
       );
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          row(cards.take(threeColumns ? 3 : 2).toList()),
+          row(cards.take(2).toList()),
           const SizedBox(height: 8),
-          if (threeColumns) cards[3] else row(cards.skip(2).toList()),
+          row(cards.skip(2).toList()),
         ],
       );
     },
@@ -82,11 +99,13 @@ class _HomeStatCard extends StatelessWidget {
   final String title;
   final String value;
   final IconData icon;
+  final List<String> details;
   final VoidCallback onTap;
   const _HomeStatCard({
     required this.title,
     required this.value,
     required this.icon,
+    this.details = const [],
     required this.onTap,
   });
 
@@ -151,6 +170,18 @@ class _HomeStatCard extends StatelessWidget {
                 ),
               ),
             ),
+            for (final detail in details) ...[
+              const SizedBox(height: 5),
+              Text(
+                detail,
+                style: const TextStyle(
+                  fontFamily: 'Gilroy',
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
           ],
         ),
       ),

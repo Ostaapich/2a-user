@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import '../../../core/utils/locale_text.dart';
 import 'dart:async';
 
@@ -309,15 +310,11 @@ class _SearchCreateBar extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: TextField(
+            child: AppSearchField(
               controller: controller,
               onChanged: onChanged,
               textInputAction: TextInputAction.search,
-              decoration: SpFinanceUi.inputDecoration(
-                context,
-                hintText: 'Найти СП по названию',
-                prefixIcon: Icons.search_rounded,
-              ),
+              hintText: 'Найти СП по названию',
             ),
           ),
           const SizedBox(width: 10),

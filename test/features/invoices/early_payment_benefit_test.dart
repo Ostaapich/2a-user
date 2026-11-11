@@ -7,6 +7,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:twoalogisticcabineuser/src/core/network/api_client.dart';
+import 'package:twoalogisticcabineuser/src/features/auth/data/auth_provider.dart';
+import 'package:twoalogisticcabineuser/src/features/clients/application/client_codes_controller.dart';
 import 'package:twoalogisticcabineuser/src/features/invoices/data/invoices_provider.dart';
 import 'package:twoalogisticcabineuser/src/features/invoices/domain/early_payment_benefit.dart';
 import 'package:twoalogisticcabineuser/src/features/invoices/domain/invoice_item.dart';
@@ -15,6 +17,16 @@ import 'package:twoalogisticcabineuser/src/features/payments/data/payment_operat
 import 'package:twoalogisticcabineuser/src/features/referral/data/referral_provider.dart';
 
 class _MockApiClient extends Mock implements ApiClient {}
+
+class _BenefitTestAuth extends AuthNotifier {
+  @override
+  AuthState build() => const AuthState(
+    isLoggedIn: true,
+    isLoading: false,
+    clientId: 42,
+    userDomain: 'benefit.test',
+  );
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -223,7 +235,7 @@ void main() {
     expect(find.text('Защита от изменения таможенных пошлин'), findsOneWidget);
     expect(find.text(r'$4.25/кг'), findsOneWidget);
     expect(find.text('Бесплатная страховка'), findsOneWidget);
-    expect(find.text(r'Экономия $8.00'), findsOneWidget);
+    expect(find.text(r'Страховка за наш счёт — до $8.00'), findsOneWidget);
     expect(find.text('Бонусные килограммы'), findsOneWidget);
     expect(find.text('+2.345 кг'), findsOneWidget);
     expect(find.text('Выбрать бонус'), findsOneWidget);
@@ -352,6 +364,24 @@ void main() {
     }, now: () => DateTime.utc(2026, 9, 16, 10));
     final invoice = _invoiceWithBenefit(benefit);
     when(
+      () => apiClient.get('/client/invoices/invoice-42/payment-options'),
+    ).thenAnswer(
+      (_) async => Response<Map<String, dynamic>>(
+        requestOptions: RequestOptions(
+          path: '/client/invoices/invoice-42/payment-options',
+        ),
+        data: {
+          'data': {
+            'methods': [
+              {'code': 'manager', 'currency': 'RUB', 'available': true},
+            ],
+            'activeMethod': 'manager',
+            'canChange': true,
+          },
+        },
+      ),
+    );
+    when(
       () => apiClient.post(
         '/client/invoices/invoice-42/early-payment-benefit',
         data: any(named: 'data'),
@@ -384,6 +414,8 @@ void main() {
       ProviderScope(
         overrides: [
           apiClientProvider.overrideWithValue(apiClient),
+          authProvider.overrideWith(_BenefitTestAuth.new),
+          activeClientCodeProvider.overrideWithValue('TEST'),
           referralProvider.overrideWith(
             (_) async => const ReferralData(
               referralKgBalance: 0,
@@ -416,9 +448,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Оплатить'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Бонусные килограммы').last);
+    expect(find.text('Один бонус за быструю оплату'), findsOneWidget);
+    final bonusChoice = find.text('Бонусные килограммы').last;
+    expect(bonusChoice.hitTestable(), findsOneWidget);
+    await tester.tap(bonusChoice);
     await tester.pump();
-    await tester.tap(find.text('Выбрать бонус').last);
+    final confirmBenefit = find.text('Выбрать бонус').last;
+    expect(confirmBenefit.hitTestable(), findsOneWidget);
+    await tester.tap(confirmBenefit);
     await tester.pumpAndSettle();
 
     expect(find.text('Один бонус за быструю оплату'), findsNothing);

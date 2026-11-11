@@ -61,6 +61,49 @@ void main() {
     expect(gallery.indexOf(second), 2);
   });
 
+  test(
+    'mixed gallery lists top-level and attached video once in either order',
+    () {
+      final image = PhotoItem.fromJson(photo(1, videos: [video('shared')]));
+      final standalone = PhotoItem.fromJson({
+        ...video('shared'),
+        'id': 'video:shared',
+        'trackNumber': 'TRACK-12',
+      });
+      for (final items in [
+        [image, standalone],
+        [standalone, image],
+      ]) {
+        final gallery = photoReportGallery(items);
+        expect(gallery.where((item) => item.isVideo), hasLength(1));
+        expect(gallery.where((item) => !item.isVideo), [image]);
+      }
+    },
+  );
+
+  test('viewer selects retained same-id video when its signed URL changed', () {
+    final first = PhotoItem(
+      url: '/video.mp4?session=old',
+      videoId: '42',
+      date: DateTime(2026),
+    );
+    final requested = PhotoItem(
+      url: '/video.mp4?session=new',
+      videoId: '42',
+      date: DateTime(2026),
+    );
+    final image = PhotoItem(
+      url: '/image.jpg',
+      date: DateTime(2026),
+      reportVideos: [first],
+    );
+    final gallery = photoReportGallery([image, requested]);
+    expect(gallery, [image, first]);
+    expect(photoReportGalleryIndex(gallery, requested), 1);
+    expect(photoReportGalleryIndex(gallery, image), 0);
+    expect(photoReportGalleryIndex([], requested), 0);
+  });
+
   test('legacy video detection ignores query and handles uppercase paths', () {
     expect(
       PhotoItem(

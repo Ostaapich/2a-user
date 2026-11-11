@@ -97,7 +97,8 @@ final photosTotalCountProvider = FutureProvider.autoDispose.family<int, String>(
     try {
       final queryParams = {
         'clientCode': clientCode,
-        'source': 'photoRequest', // Только фото из запросов фотоотчётов
+        'source': 'photoRequest',
+        'includeVideos': true, // Только фото из запросов фотоотчётов
         'take': 1,
       };
       final data = await StaleDataCache.getJson(
@@ -130,7 +131,8 @@ final photosRecentProvider = FutureProvider.autoDispose
       try {
         final queryParams = {
           'clientCode': params.clientCode,
-          'source': 'photoRequest', // Только фото из запросов фотоотчётов
+          'source': 'photoRequest',
+          'includeVideos': true, // Только фото из запросов фотоотчётов
           'take': params.limit,
         };
         final data = await StaleDataCache.getJson(
@@ -168,7 +170,8 @@ final photosDaysProvider = FutureProvider.autoDispose
           '/photos/days',
           queryParameters: {
             'clientCode': params.clientCode,
-            'source': 'photoRequest', // Только фото из запросов фотоотчётов
+            'source': 'photoRequest',
+            'includeVideos': true, // Только фото из запросов фотоотчётов
             'month': params.month,
             'year': params.year,
           },
@@ -200,7 +203,8 @@ final photosByDateProvider = FutureProvider.autoDispose
       try {
         final queryParams = {
           'clientCode': params.clientCode,
-          'source': 'photoRequest', // Только фото из запросов фотоотчётов
+          'source': 'photoRequest',
+          'includeVideos': true, // Только фото из запросов фотоотчётов
           'date': params.date,
           'take': 100,
         };
@@ -231,6 +235,7 @@ class PaginatedPhotosState {
   final int total;
   final String? error;
   final String? date;
+  final String search;
   final String clientCode;
 
   const PaginatedPhotosState({
@@ -240,6 +245,7 @@ class PaginatedPhotosState {
     this.total = 0,
     this.error,
     this.date,
+    this.search = '',
     required this.clientCode,
   });
 
@@ -258,10 +264,13 @@ class PaginatedPhotosState {
       total: total ?? this.total,
       error: clearError ? null : (error ?? this.error),
       date: date,
+      search: search,
       clientCode: clientCode,
     );
   }
 }
+
+enum _PhotoLoadPhase { initial, more }
 
 class PaginatedPhotosNotifier {
   static const int _pageSize = 12;
@@ -280,9 +289,27 @@ class PaginatedPhotosNotifier {
   DateTime? _lastSilentRefreshStartedAt;
   bool _silentRefreshInProgress = false;
   bool _isRealtimeRefreshEnabled = false;
+  bool _disposed = false;
+  int _loadGeneration = 0;
+  _PhotoLoadPhase? _failedPhase;
 
-  PaginatedPhotosNotifier(this._ref, String clientCode, [String? date])
-    : _state = PaginatedPhotosState(clientCode: clientCode, date: date) {
+  bool get failedInitialLoad => _failedPhase == _PhotoLoadPhase.initial;
+  bool _isCurrentLoad(int generation) =>
+      !_disposed && generation == _loadGeneration;
+
+  Future<void> retryFailedLoad() =>
+      _failedPhase == _PhotoLoadPhase.more ? loadMore() : loadInitial();
+
+  PaginatedPhotosNotifier(
+    this._ref,
+    String clientCode, [
+    String? date,
+    String search = '',
+  ]) : _state = PaginatedPhotosState(
+         clientCode: clientCode,
+         date: date,
+         search: search,
+       ) {
     loadInitial();
   }
 
@@ -378,49 +405,69 @@ class PaginatedPhotosNotifier {
   /// Фоновое обновление без сброса скролла и пагинации.
   /// Перезагружает столько же фото, сколько уже подгружено.
   Future<void> _silentRefresh() async {
-    if (_silentRefreshInProgress) {
+    if (_disposed || _silentRefreshInProgress) {
       return;
     }
+    final generation = _loadGeneration;
     _silentRefreshInProgress = true;
     try {
       final currentCount = _state.photos.length;
       final take = currentCount > _pageSize ? currentCount : _pageSize;
-      final response = await _apiClient.get(
-        '/photos',
-        queryParameters: {
-          'clientCode': _state.clientCode,
-          'source': 'photoRequest',
-          if (_state.date != null) 'date': _state.date,
-          'take': take,
-          'skip': 0,
-        },
-      );
-      if (response.statusCode == 200 && response.data != null) {
-        final data = response.data as Map<String, dynamic>;
-        final json = data['data'] as List<dynamic>? ?? [];
-        final total = data['total'] as int? ?? 0;
-        final photos = json
-            .map((j) => PhotoItem.fromJson(j as Map<String, dynamic>))
-            .toList();
-        ClientLogService.instance.add(
-          type: 'photos_silent_refresh_success',
-          level: 'info',
-          message: 'Мягкое обновление фотоотчётов выполнено',
-          data: {'date': _state.date, 'count': photos.length, 'total': total},
+      // The mixed photo/video endpoint accepts at most 1000 rows per request.
+      // Re-read the complete loaded range in bounded chunks, then replace it
+      // atomically so a large gallery keeps its scroll position and all pages.
+      final photos = <PhotoItem>[];
+      var total = _state.total;
+      while (photos.length < take) {
+        final chunkSize = (take - photos.length).clamp(1, 1000);
+        final response = await _apiClient.get(
+          '/photos',
+          queryParameters: {
+            'clientCode': _state.clientCode,
+            'source': 'photoRequest',
+            'includeVideos': true,
+            if (_state.date != null) 'date': _state.date,
+            if (_state.search.isNotEmpty) 'search': _state.search,
+            'take': chunkSize,
+            'skip': photos.length,
+          },
         );
-        if (_state.photos.length > currentCount) {
-          _queueSilentRefresh(Duration.zero);
-          return;
+        if (!_isCurrentLoad(generation)) return;
+        if (response.statusCode != 200 || response.data is! Map) {
+          throw const FormatException('Invalid photos refresh response');
         }
-        _update(
-          _state.copyWith(
-            photos: photos,
-            total: total,
-            hasMore: photos.length < total,
-          ),
+        final data = response.data as Map<String, dynamic>;
+        final rows = data['data'] as List<dynamic>? ?? [];
+        total = data['total'] as int? ?? 0;
+        photos.addAll(
+          rows.map((j) => PhotoItem.fromJson(j as Map<String, dynamic>)),
         );
+        if (photos.length >= total) break;
+        if (rows.isEmpty) {
+          throw const FormatException('Incomplete photos refresh response');
+        }
       }
+      ClientLogService.instance.add(
+        type: 'photos_silent_refresh_success',
+        level: 'info',
+        message: 'Мягкое обновление фотоотчётов выполнено',
+        data: {'date': _state.date, 'count': photos.length, 'total': total},
+      );
+      if (_state.photos.length > currentCount) {
+        _queueSilentRefresh(Duration.zero);
+        return;
+      }
+      _failedPhase = null;
+      _update(
+        _state.copyWith(
+          clearError: true,
+          photos: photos,
+          total: total,
+          hasMore: photos.length < total,
+        ),
+      );
     } catch (e) {
+      if (!_isCurrentLoad(generation)) return;
       ClientLogService.instance.add(
         type: 'photos_silent_refresh_error',
         level: 'warning',
@@ -434,6 +481,8 @@ class PaginatedPhotosNotifier {
   }
 
   void dispose() {
+    _disposed = true;
+    _listeners.clear();
     _cancelRealtimeRefresh();
     _refreshTimer?.cancel();
     _cooldownTimer?.cancel();
@@ -450,11 +499,15 @@ class PaginatedPhotosNotifier {
   }
 
   void _update(PaginatedPhotosState s) {
+    if (_disposed) return;
     _state = s;
     _notify();
   }
 
   Future<void> loadInitial() async {
+    if (_disposed) return;
+    final generation = ++_loadGeneration;
+    _failedPhase = null;
     if (_ref.read(demoModeProvider)) {
       _update(
         _state.copyWith(
@@ -466,14 +519,7 @@ class PaginatedPhotosNotifier {
       );
       return;
     }
-    _update(
-      _state.copyWith(
-        isLoading: true,
-        photos: [],
-        hasMore: true,
-        clearError: true,
-      ),
-    );
+    _update(_state.copyWith(isLoading: true, clearError: true));
     try {
       ClientLogService.instance.add(
         type: 'photos_page_load_start',
@@ -482,6 +528,7 @@ class PaginatedPhotosNotifier {
         data: {'date': _state.date, 'take': _pageSize},
       );
       final result = await _fetch(skip: 0);
+      if (!_isCurrentLoad(generation)) return;
       ClientLogService.instance.add(
         type: 'photos_page_load_success',
         level: 'info',
@@ -501,6 +548,8 @@ class PaginatedPhotosNotifier {
         ),
       );
     } catch (e) {
+      if (!_isCurrentLoad(generation)) return;
+      _failedPhase = _PhotoLoadPhase.initial;
       ClientLogService.instance.add(
         type: 'photos_page_load_error',
         level: 'warning',
@@ -512,8 +561,10 @@ class PaginatedPhotosNotifier {
   }
 
   Future<void> loadMore() async {
-    if (_state.isLoading || !_state.hasMore) return;
-    _update(_state.copyWith(isLoading: true));
+    if (_disposed || _state.isLoading || !_state.hasMore) return;
+    final generation = _loadGeneration;
+    _failedPhase = null;
+    _update(_state.copyWith(isLoading: true, clearError: true));
     try {
       final skip = _state.photos.length;
       ClientLogService.instance.add(
@@ -523,6 +574,7 @@ class PaginatedPhotosNotifier {
         data: {'date': _state.date, 'take': _pageSize, 'skip': skip},
       );
       final result = await _fetch(skip: skip);
+      if (!_isCurrentLoad(generation)) return;
       ClientLogService.instance.add(
         type: 'photos_page_load_more_success',
         level: 'info',
@@ -539,11 +591,14 @@ class PaginatedPhotosNotifier {
         _state.copyWith(
           photos: photos,
           total: result.total,
-          hasMore: photos.length < result.total,
+          hasMore: result.photos.isNotEmpty && photos.length < result.total,
           isLoading: false,
+          clearError: true,
         ),
       );
     } catch (e) {
+      if (!_isCurrentLoad(generation)) return;
+      _failedPhase = _PhotoLoadPhase.more;
       ClientLogService.instance.add(
         type: 'photos_page_load_more_error',
         level: 'warning',
@@ -560,7 +615,9 @@ class PaginatedPhotosNotifier {
     final queryParams = {
       'clientCode': _state.clientCode,
       'source': 'photoRequest',
+      'includeVideos': true,
       if (_state.date != null) 'date': _state.date,
+      if (_state.search.isNotEmpty) 'search': _state.search,
       'take': _pageSize,
       'skip': skip,
     };
@@ -626,7 +683,8 @@ final photosSearchProvider =
             '/photos',
             queryParameters: {
               'clientCode': params.clientCode,
-              'source': 'photoRequest', // Только фото из запросов фотоотчётов
+              'source': 'photoRequest',
+              'includeVideos': true, // Только фото из запросов фотоотчётов
               'search': params.query,
               'take': 50,
             },
@@ -647,3 +705,26 @@ final photosSearchProvider =
         }
       },
     );
+
+/// Filters belong to the server query and its cache key, never the loaded page.
+final filteredPhotosProvider = Provider.autoDispose
+    .family<
+      PaginatedPhotosNotifier,
+      ({String clientCode, String? date, String search})
+    >((ref, filters) {
+      final notifier = PaginatedPhotosNotifier(
+        ref,
+        filters.clientCode,
+        filters.date,
+        filters.search,
+      );
+      ref.listen<int>(
+        activeShellBranchIndexProvider,
+        (_, index) => notifier.setRealtimeRefreshEnabled(
+          index == ShellBranchIndex.photos,
+        ),
+        fireImmediately: true,
+      );
+      ref.onDispose(notifier.dispose);
+      return notifier;
+    });

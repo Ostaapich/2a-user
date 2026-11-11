@@ -49,6 +49,15 @@ void main() {
       'take': 1,
       'statuses': 'in_warehouse',
     });
+    expect(
+      await container.read(homePendingTracksCountProvider('TEST').future),
+      1234,
+    );
+    expect(api.queries['/tracks'], {
+      'clientCode': 'TEST',
+      'take': 1,
+      'statuses': 'pending',
+    });
     expect(api.queries['/assemblies'], {
       'clientCode': 'TEST',
       'take': 1,

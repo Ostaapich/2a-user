@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -136,20 +137,16 @@ class _SpOrganizerPurchaseBlankImportSheetState
                         ),
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                AppSearchField(
                   key: const ValueKey('purchase-blank-search'),
                   controller: _searchController,
-                  textInputAction: TextInputAction.search,
                   onChanged: _onSearchChanged,
                   onSubmitted: (_) => _load(),
-                  decoration: SpFinanceUi.inputDecoration(
+                  textInputAction: TextInputAction.search,
+                  hintText: tr(
                     context,
-                    hintText: tr(
-                      context,
-                      ru: 'Название, ссылка, трек или параметры',
-                      zh: '名称、链接、运单号或规格',
-                    ),
-                    prefixIcon: Icons.search_rounded,
+                    ru: 'Название, ссылка, трек или параметры',
+                    zh: '名称、链接、运单号或规格',
                   ),
                 ),
                 const SizedBox(height: 12),

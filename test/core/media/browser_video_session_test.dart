@@ -241,4 +241,97 @@ void main() {
       await session.dispose();
     },
   );
+  test(
+    'same-owner bearer rotation during bootstrap and renew keeps video alive',
+    () async {
+      final adapter = _Adapter(), dio = Dio();
+      dio.httpClientAdapter = adapter;
+      var token = 'old-bearer';
+      const identity = 'api-origin:session-epoch:original-anchor';
+      var invalid = 0;
+      final pending = Completer<Map<String, dynamic>>();
+      final entered = Completer<void>();
+      adapter.grant = () {
+        entered.complete();
+        return pending.future;
+      };
+      final opening = BrowserVideoSession.open(
+        path: asset,
+        getToken: () async => token,
+        getSessionIdentity: () async => identity,
+        origin: Uri.parse('https://cabinet.example'),
+        transport: dio,
+        onInvalid: () => invalid++,
+      );
+      await entered.future;
+      token = 'renewed-bearer';
+      pending.complete({
+        'url': privateAsset,
+        'expiresIn': 900,
+        'grantId': firstGrant,
+      });
+      final session = await opening;
+      adapter.grant = () async => {
+        'url': privateAsset,
+        'expiresIn': 900,
+        'grantId': nextGrant,
+      };
+      await session.renew();
+      expect(invalid, 0);
+      final grants = adapter.requests
+          .where((r) => r.uri.path == '/private-media/session')
+          .toList();
+      expect(grants.length, 2);
+      // Existing server-valid bearer remains private to this playback session.
+      expect(
+        grants.every((r) => r.headers['Authorization'] == 'Bearer old-bearer'),
+        isTrue,
+      );
+      await session.dispose();
+      expect(adapter.requests.last.queryParameters['grantId'], nextGrant);
+    },
+  );
+
+  for (final change in ['logout', 'client', 'agent', 'domain']) {
+    test(
+      'stable media identity still rejects $change during in-flight grant',
+      () async {
+        final adapter = _Adapter(), dio = Dio();
+        dio.httpClientAdapter = adapter;
+        var identity = 'original-session';
+        var invalid = 0;
+        final session = await BrowserVideoSession.open(
+          path: asset,
+          getToken: () async => 'unchanged-cached-bearer',
+          getSessionIdentity: () async => identity,
+          origin: Uri.parse('https://cabinet.example'),
+          transport: dio,
+          onInvalid: () => invalid++,
+        );
+        final pending = Completer<Map<String, dynamic>>(),
+            entered = Completer<void>();
+        adapter.grant = () {
+          entered.complete();
+          return pending.future;
+        };
+        final renewing = session.renew();
+        await entered.future;
+        identity = 'changed-$change';
+        pending.complete({
+          'url': privateAsset,
+          'expiresIn': 900,
+          'grantId': nextGrant,
+        });
+        await renewing;
+        expect(invalid, 1);
+        expect(
+          adapter.requests
+              .where((r) => r.queryParameters['media-clear'] == '1')
+              .map((r) => r.queryParameters['grantId']),
+          [nextGrant, firstGrant],
+        );
+        await session.dispose();
+      },
+    );
+  }
 }

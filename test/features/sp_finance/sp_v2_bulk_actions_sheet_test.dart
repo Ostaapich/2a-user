@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_keyboard_dismiss.dart';
+import 'package:twoalogisticcabineuser/src/features/sp_finance/presentation/sp_finance_ui.dart';
+import '../keyboard/keyboard_form_probe.dart';
+import '../../helpers/keyboard_acceptance.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twoalogisticcabineuser/src/core/network/api_client.dart';
@@ -78,6 +82,58 @@ class _FakeRepository extends SpV2Repository {
 }
 
 void main() {
+  setUpAll(loadKeyboardAcceptanceFonts);
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets('$platform archive reason actual modal320height', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 640);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            spV2RepositoryProvider.overrideWithValue(_FakeRepository()),
+          ],
+          child: MaterialApp(
+            theme: ThemeData(platform: platform),
+            builder: (_, child) => AppKeyboardDismissRegion(child: child!),
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () => showSpFinanceModalSheet<void>(
+                    context: context,
+                    builder: (_) => SpV2BulkActionsSheet(purchase: _purchase),
+                  ),
+                  child: const Text('Архив'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Архив'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.scrollUntilVisible(
+        find.text('В архив'),
+        120,
+        scrollable: find
+            .byElementPredicate(
+              (element) =>
+                  element.widget is Scrollable &&
+                  ModalRoute.of(element)?.isCurrent == true &&
+                  (element.widget as Scrollable).axisDirection ==
+                      AxisDirection.down,
+            )
+            .first,
+      );
+      await tester.tap(find.text('В архив'));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(await probeCurrentFormEditors(tester), 1);
+    });
+  }
+
   testWidgets('bulk actions inherit SP card style and fit 320 px', (
     tester,
   ) async {

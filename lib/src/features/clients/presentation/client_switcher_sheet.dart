@@ -5,6 +5,7 @@ import '../../../core/ui/animated_hero_glow_backdrop.dart';
 import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/empty_state.dart';
 import '../../../core/ui/sheet_handle.dart';
+import '../../../core/utils/locale_text.dart';
 import '../../../core/utils/error_utils.dart';
 import '../../assemblies/data/assemblies_provider.dart';
 import '../../invoices/data/invoices_provider.dart';
@@ -77,6 +78,9 @@ class _ClientSwitcherSheetState extends ConsumerState<ClientSwitcherSheet> {
                     icon: errorInfo.icon,
                     title: errorInfo.title,
                     message: errorInfo.message,
+                    actionLabel: tr(context, ru: 'Повторить', zh: '重试'),
+                    onAction: () =>
+                        ref.invalidate(clientCodesControllerProvider),
                   ),
                 ],
               ),
@@ -101,15 +105,21 @@ class _ClientSwitcherSheetState extends ConsumerState<ClientSwitcherSheet> {
                     ),
                   ),
                   if (codes.isEmpty)
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(16, 14, 16, 24 + bottomSafe),
-                      child: const _ClientCodeEmptyCard(),
+                    Flexible(
+                      child: SingleChildScrollView(
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        padding: EdgeInsets.fromLTRB(
+                          16,
+                          14,
+                          16,
+                          24 + bottomSafe,
+                        ),
+                        child: const _ClientCodeEmptyCard(),
+                      ),
                     )
                   else ...[
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(18, 14, 18, 10),
-                      child: _ClientCodeSectionLabel(),
-                    ),
+                    const SizedBox(height: 14),
                     Flexible(
                       child: SingleChildScrollView(
                         keyboardDismissBehavior:
@@ -336,28 +346,6 @@ class _HeaderPill extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _ClientCodeSectionLabel extends StatelessWidget {
-  const _ClientCodeSectionLabel();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.symmetric(horizontal: 2),
-      child: Text(
-        'Доступные коды',
-        style: TextStyle(
-          color: AppColors.textSecondary,
-          fontFamily: 'Gilroy',
-          fontWeight: FontWeight.w800,
-          fontSize: 12,
-          height: 1.1,
-          letterSpacing: 0.2,
-        ),
       ),
     );
   }

@@ -1,5 +1,9 @@
+import '../media/browser_media_export.dart'
+    show cancelActiveBrowserMediaExports;
 import 'dart:async';
 import 'dart:collection';
+import 'client_session_renewal.dart';
+import 'client_token_lock.dart';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -40,8 +44,47 @@ class _GetRequestLane {
 /// Клиент для работы с API
 class ApiClient {
   static int _mediaSessionEpoch = 0;
-  Future<String> getMediaCacheIdentity() async =>
-      '$_mediaSessionEpoch:${await getToken()}';
+  static int _clientAuthGeneration = 0;
+  static bool _clientLoggingOut = false;
+  static bool _externalSessionChanged = false;
+
+  bool takeExternalSessionChange() {
+    final changed = _externalSessionChanged;
+    _externalSessionChanged = false;
+    return changed;
+  }
+
+  static final _clientRenewal = ClientSessionRenewal();
+  static Future<void> _tokenMutationTail = Future<void>.value();
+
+  static Future<void> _serializeTokenMutation(
+    Future<void> Function() action, {
+    bool requireLock = false,
+  }) {
+    final next = _tokenMutationTail.then((_) async {
+      await withClientTokenLock(action, requireLock: requireLock);
+    });
+    _tokenMutationTail = next.then(
+      (_) {},
+      onError: (Object error, StackTrace stack) {},
+    );
+    return next;
+  }
+
+  void prepareForLogout() {
+    _clientAuthGeneration++;
+    _clientLoggingOut = true;
+  }
+
+  static String? _mediaIdentityToken;
+  Future<String> getMediaCacheIdentity() async {
+    final token = await getToken();
+    // Only our own persisted token can participate in a known renewal rotation.
+    // Overrides/external credential sources retain raw-token invalidation.
+    final owned = token != null && token == _inMemoryToken;
+    if (owned) _mediaIdentityToken ??= token;
+    return '$_mediaSessionEpoch:${owned ? _mediaIdentityToken : token}';
+  }
 
   late Dio _dio;
   // На мобильных платформах используем FlutterSecureStorage с правильными настройками
@@ -80,6 +123,7 @@ class ApiClient {
   // Callback для обработки 401 unauthorized
   OnUnauthorizedCallback? _onUnauthorized;
   bool _unauthorizedCallbackScheduled = false;
+  int? _pendingUnauthorizedGeneration;
   OnAppUpdateRequiredCallback? _onAppUpdateRequired;
   bool _appUpdateCallbackScheduled = false;
 
@@ -463,6 +507,24 @@ class ApiClient {
     }
   }
 
+  bool _isPublicAuthenticationPost(RequestOptions options) {
+    if (options.method.toUpperCase() != 'POST') return false;
+    final path = options.uri.path.replaceFirst(RegExp(r'^/api(?=/)'), '');
+    return const <String>{
+      '/login',
+      '/login/verification/request',
+      '/login/verification/verify',
+      '/register',
+      '/register/phone-verification/request',
+      '/register/phone-verification/verify',
+      '/password-reset/request',
+      '/password-reset/verify',
+      '/password-reset/complete',
+      '/client/passkeys/authenticate/options',
+      '/client/passkeys/authenticate/verify',
+    }.contains(path);
+  }
+
   /// Интерсептор для добавления токена авторизации
   Interceptor _authInterceptor() {
     return InterceptorsWrapper(
@@ -475,7 +537,42 @@ class ApiClient {
           options.contentType = null;
         }
 
-        final token = await getToken();
+        var token = await getToken();
+        final generation = _clientAuthGeneration;
+        final origin = activeBaseUrl;
+        if (token != null &&
+            token.isNotEmpty &&
+            !_clientLoggingOut &&
+            !_isPublicAuthenticationPost(options)) {
+          final original = token;
+          token = await _clientRenewal.tokenForRequest(
+            token: original,
+            origin: origin,
+            generation: generation,
+            isCurrent: () =>
+                _clientAuthGeneration == generation &&
+                activeBaseUrl == origin &&
+                !_clientLoggingOut,
+            request: (clientId, agentId) =>
+                _requestClientRenewal(original, origin, clientId, agentId),
+            persist: (renewed) =>
+                _persistClientRenewal(original, renewed, generation, origin),
+            invalidate: () =>
+                _scheduleUnauthorizedCallback(expectedGeneration: generation),
+          );
+          if (token == null ||
+              generation != _clientAuthGeneration ||
+              origin != activeBaseUrl) {
+            return handler.reject(
+              DioException(
+                requestOptions: options,
+                type: DioExceptionType.cancel,
+                message: 'Authentication context changed',
+              ),
+            );
+          }
+        }
+        options.extra['client_auth_generation'] = generation;
         if (token != null && token.isNotEmpty) {
           options.headers['Authorization'] = 'Bearer $token';
         }
@@ -509,7 +606,9 @@ class ApiClient {
         if (error.response?.statusCode == 401) {
           final isLoginRequest = error.requestOptions.path.contains('/login');
 
-          if (!isLoginRequest) {
+          if (!isLoginRequest &&
+              error.requestOptions.extra['client_auth_generation'] ==
+                  _clientAuthGeneration) {
             final sentAuth =
                 error.requestOptions.extra['sent_auth_token'] == true ||
                 _hasAuthorizationHeader(error.requestOptions);
@@ -525,7 +624,11 @@ class ApiClient {
                 },
               );
               // Защита от "шторма" 401: если много запросов одновременно — callback один раз.
-              _scheduleUnauthorizedCallback();
+              _scheduleUnauthorizedCallback(
+                expectedGeneration:
+                    error.requestOptions.extra['client_auth_generation']
+                        as int?,
+              );
             } else {
               ClientLogService.instance.add(
                 type: 'auth_unauthorized_without_token',
@@ -552,15 +655,18 @@ class ApiClient {
     );
   }
 
-  void _scheduleUnauthorizedCallback() {
+  void _scheduleUnauthorizedCallback({int? expectedGeneration}) {
+    _pendingUnauthorizedGeneration = expectedGeneration;
     if (_unauthorizedCallbackScheduled) return;
     _unauthorizedCallbackScheduled = true;
 
     void run() {
-      try {
+      final pendingGeneration = _pendingUnauthorizedGeneration;
+      _pendingUnauthorizedGeneration = null;
+      _unauthorizedCallbackScheduled = false;
+      if (pendingGeneration == null ||
+          pendingGeneration == _clientAuthGeneration) {
         _onUnauthorized?.call();
-      } finally {
-        _unauthorizedCallbackScheduled = false;
       }
     }
 
@@ -1149,6 +1255,144 @@ class ApiClient {
         );
   }
 
+  // Renewal deliberately uses a bare transport: no recursive auth interceptor,
+  // response-token logging, or global unauthorized callback before ownership checks.
+  Future<Map<String, dynamic>> _requestClientRenewal(
+    String token,
+    String origin,
+    int clientId,
+    int agentId,
+  ) async {
+    final client = Dio(
+      BaseOptions(
+        baseUrl: origin,
+        followRedirects: false,
+        maxRedirects: 0,
+        connectTimeout: ApiConfig.connectTimeout,
+        receiveTimeout: ApiConfig.receiveTimeout,
+        sendTimeout: ApiConfig.sendTimeout,
+        headers: {
+          ...ApiConfig.defaultHeaders,
+          'Authorization': 'Bearer $token',
+        },
+      ),
+    );
+    final adapter = _adapterFactory?.call() ?? createNativeHttpAdapter();
+    if (adapter != null) client.httpClientAdapter = adapter;
+    if (kIsWeb) client.transformer = SyncTransformer();
+    try {
+      try {
+        client.options.headers.addAll(
+          await (_runtimeHeaders?.call() ?? AppRuntimeInfo.instance.headers())
+              .timeout(
+                const Duration(seconds: 1),
+                onTimeout: () => const <String, String>{},
+              ),
+        );
+      } catch (_) {
+        /* Existing runtime metadata remains best effort. */
+      }
+      client.options.headers['X-App-Distribution'] = appDistribution;
+      final response = await client.post<dynamic>(
+        '/auth/client/renew',
+        data: {'expectedClientId': clientId, 'expectedAgentId': agentId},
+      );
+      return Map<String, dynamic>.from(response.data as Map);
+    } on DioException catch (error) {
+      final body = error.response?.data;
+      throw ClientRenewalException(
+        error.response?.statusCode,
+        body is Map ? body['code'] as String? : null,
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<String?> _persistClientRenewal(
+    String previous,
+    String renewed,
+    int generation,
+    String origin,
+  ) async {
+    var persisted = false;
+    String? accepted;
+    bool current() =>
+        generation == _clientAuthGeneration &&
+        !_clientLoggingOut &&
+        origin == activeBaseUrl &&
+        _inMemoryToken == previous;
+    await _serializeTokenMutation(() async {
+      if (!current()) return;
+      final prefs = await SharedPreferences.getInstance().timeout(
+        _prefsTimeout,
+      );
+      if (kIsWeb) {
+        await prefs.reload();
+        // A different tab may have logged out or selected another identity.
+        final stored = prefs.getString(_tokenKey);
+        final state = classifyPersistedClientSession(
+          previous,
+          stored,
+          DateTime.now(),
+        );
+        if (state == PersistedClientSession.sameFamilyWinner) {
+          if (!current()) return;
+          _inMemoryToken = stored;
+          _tokenLoadInFlight = null;
+          accepted = stored;
+          return;
+        }
+        if (state == PersistedClientSession.changed) {
+          if (!current()) return;
+          _externalSessionChanged = true;
+          _clientAuthGeneration++;
+          _clientLoggingOut = true;
+          _inMemoryToken = null;
+          _tokenLoadInFlight = null;
+          _mediaIdentityToken = null;
+          _mediaSessionEpoch++;
+          cancelActiveBrowserMediaExports();
+          PaintingBinding.instance.imageCache.clear();
+          PaintingBinding.instance.imageCache.clearLiveImages();
+          _scheduleUnauthorizedCallback(
+            expectedGeneration: _clientAuthGeneration,
+          );
+          return;
+        }
+      }
+      if (!current()) return;
+      if (!kIsWeb &&
+          !_isDesktop &&
+          defaultTargetPlatform == TargetPlatform.iOS) {
+        persisted = await _writeTokenToSecureStorage(renewed);
+        if (persisted) await _removeTokenFromPrefs();
+      }
+      if (!persisted) persisted = await prefs.setString(_tokenKey, renewed);
+      if (!current()) return;
+      if (persisted) {
+        accepted = renewed;
+        _inMemoryToken = renewed;
+        _tokenLoadInFlight = null;
+        if (!kIsWeb &&
+            !_isDesktop &&
+            defaultTargetPlatform == TargetPlatform.android) {
+          unawaited(
+            _serializeTokenMutation(() async {
+              if (generation == _clientAuthGeneration &&
+                  _inMemoryToken == renewed) {
+                await _writeTokenToSecureStorage(renewed);
+              }
+            }),
+          );
+        }
+      }
+    }, requireLock: kIsWeb);
+    return generation == _clientAuthGeneration && !_clientLoggingOut
+        ? accepted
+        : null;
+  }
+
   // Token management
   Future<String?> getToken() async {
     // Сначала проверяем кеш в памяти
@@ -1156,15 +1400,23 @@ class ApiClient {
     if (cached != null) return cached;
 
     // Single-flight: при одновременных запросах не дергаем storage многократно.
+    if (_clientLoggingOut) return null;
     final inFlight = _tokenLoadInFlight;
-    if (inFlight != null) return inFlight;
+    if (inFlight != null) {
+      final generation = _clientAuthGeneration;
+      final token = await inFlight;
+      return generation == _clientAuthGeneration ? token : _inMemoryToken;
+    }
 
+    final loadGeneration = _clientAuthGeneration;
     final future = _loadTokenFromStorage();
     _tokenLoadInFlight = future;
     try {
       final token = await future;
+      if (loadGeneration != _clientAuthGeneration) return _inMemoryToken;
       if (token != null && token.isNotEmpty) {
         _inMemoryToken = token;
+        _mediaIdentityToken ??= token;
       }
       return token;
     } finally {
@@ -1232,6 +1484,7 @@ class ApiClient {
   }
 
   Future<String?> _readTokenFromSecureStorage() async {
+    final generation = _clientAuthGeneration;
     try {
       // Таймаут 5 сек оставляем только для legacy-сценария: пользователь был
       // авторизован в старой версии, где mirror в SharedPreferences ещё не было.
@@ -1243,7 +1496,13 @@ class ApiClient {
         // Android больше не зависели от Keystore. На iOS mirror не создаём:
         // Keychain должен оставаться единственным постоянным хранилищем токена.
         if (defaultTargetPlatform != TargetPlatform.iOS) {
-          unawaited(_writeTokenToPrefs(token));
+          unawaited(
+            _serializeTokenMutation(() async {
+              if (generation == _clientAuthGeneration && !_clientLoggingOut) {
+                await _writeTokenToPrefs(token);
+              }
+            }),
+          );
         }
         return token;
       }
@@ -1316,13 +1575,26 @@ class ApiClient {
 
   Future<void> setToken(String token) async {
     _mediaSessionEpoch++;
+    final generation = ++_clientAuthGeneration;
+    _clientLoggingOut = false;
+    _externalSessionChanged = false;
+    cancelActiveBrowserMediaExports();
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
     // Кешируем в памяти
     _inMemoryToken = token;
+    _mediaIdentityToken = token;
     // Сбрасываем single-flight, чтобы следующий getToken не ждал старую попытку.
     _tokenLoadInFlight = null;
 
+    await _serializeTokenMutation(() async {
+      if (generation == _clientAuthGeneration) {
+        await _storeToken(token, generation);
+      }
+    });
+  }
+
+  Future<void> _storeToken(String token, int generation) async {
     // На web и desktop сохраняем в SharedPreferences (localStorage)
     if (kIsWeb || _isDesktop) {
       await _writeTokenToPrefs(token);
@@ -1365,16 +1637,52 @@ class ApiClient {
 
     // SecureStorage синхронизируем best-effort в фоне, чтобы вход не ждал
     // Android Keystore/EncryptedSharedPreferences.
-    unawaited(_writeTokenToSecureStorage(token).then((_) {}));
+    unawaited(
+      _serializeTokenMutation(() async {
+        if (generation == _clientAuthGeneration && _inMemoryToken == token) {
+          await _writeTokenToSecureStorage(token);
+        }
+      }),
+    );
+  }
+
+  // A platform-channel timeout does not cancel the native operation. Reconcile
+  // its eventual completion against the current identity, so a late old write
+  // (or old delete) cannot remain the final persisted value after logout/login.
+  void _observeSecureMutation(Future<void> mutation, String? written) {
+    unawaited(
+      mutation.then((_) {
+        if (_inMemoryToken == written &&
+            !(written != null && _clientLoggingOut)) {
+          return;
+        }
+        unawaited(
+          _serializeTokenMutation(() async {
+            final current = _clientLoggingOut ? null : _inMemoryToken;
+            if (current == null) {
+              await _deleteTokenFromSecureStorage();
+            } else {
+              await _writeTokenToSecureStorage(current);
+            }
+          }),
+        );
+      }, onError: (Object error, StackTrace stack) {}),
+    );
+  }
+
+  Future<void> _deleteTokenFromSecureStorage() async {
+    final mutation = _storage.delete(key: _tokenKey);
+    _observeSecureMutation(mutation, null);
+    await mutation.timeout(const Duration(seconds: 5));
   }
 
   Future<bool> _writeTokenToSecureStorage(String token) async {
     try {
       // Таймаут 5 сек: при первой записи после переустановки EncryptedSharedPreferences
       // может зависнуть на Android при генерации ключей шифрования.
-      await _storage
-          .write(key: _tokenKey, value: token)
-          .timeout(const Duration(seconds: 5));
+      final mutation = _storage.write(key: _tokenKey, value: token);
+      _observeSecureMutation(mutation, token);
+      await mutation.timeout(const Duration(seconds: 5));
       ClientLogService.instance.action(
         'Токен сохранён',
         data: {'storage': 'secure_storage'},
@@ -1395,11 +1703,19 @@ class ApiClient {
 
   Future<void> clearToken() async {
     _mediaSessionEpoch++;
+    _clientAuthGeneration++;
+    _clientLoggingOut = true;
+    cancelActiveBrowserMediaExports();
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
     _inMemoryToken = null;
+    _mediaIdentityToken = null;
     _tokenLoadInFlight = null;
 
+    await _serializeTokenMutation(_clearStoredToken);
+  }
+
+  Future<void> _clearStoredToken() async {
     // На web и desktop удаляем из SharedPreferences
     if (kIsWeb || _isDesktop) {
       await _removeTokenFromPrefs();
@@ -1418,7 +1734,7 @@ class ApiClient {
     // Затем удаляем из FlutterSecureStorage. Если Keystore зависнет, быстрый mirror
     // уже очищен, поэтому следующий запуск не восстановит старую авторизацию.
     try {
-      await _storage.delete(key: _tokenKey).timeout(const Duration(seconds: 5));
+      await _deleteTokenFromSecureStorage();
       ClientLogService.instance.action(
         'Токен очищен',
         data: {'storage': 'secure_storage'},
@@ -1468,13 +1784,21 @@ class ApiClient {
     required ProgressCallback onReceiveProgress,
   }) => _get<T>(path, options: options, onReceiveProgress: onReceiveProgress);
 
+  /// Cancellable media export using the same authentication and redirect guards.
+  Future<Response<T>> getMediaTransfer<T>(
+    String path, {
+    Options? options,
+    required CancelToken cancelToken,
+  }) => _get<T>(path, options: options, externalCancelToken: cancelToken);
+
   Future<Response<T>> _get<T>(
     String path, {
     Map<String, dynamic>? queryParameters,
     Options? options,
     ProgressCallback? onReceiveProgress,
+    CancelToken? externalCancelToken,
   }) async {
-    final cancelToken = CancelToken();
+    final cancelToken = externalCancelToken ?? CancelToken();
     return _runWithGetSlot(
       path,
       () => _request(
@@ -1499,6 +1823,21 @@ class ApiClient {
           : _metadataGetLane,
     );
   }
+
+  /// POST запрос
+  /// One attempt for explicit operations backed by durable idempotency keys.
+  Future<Response<T>> postOnce<T>(
+    String path, {
+    dynamic data,
+    Options? options,
+  }) => _request(
+    (dio) => dio.post<T>(path, data: data, options: options),
+    method: 'POST',
+    path: path,
+    idempotent: false,
+    options: options,
+    allowRetry: false,
+  );
 
   /// POST запрос
   Future<Response<T>> post<T>(

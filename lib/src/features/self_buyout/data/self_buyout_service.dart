@@ -1,3 +1,8 @@
+import '../../../core/services/analytics_service.dart';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,10 +24,10 @@ class SelfBuyoutService {
           res.data as Map<String, dynamic>,
         );
       }
-      return SelfBuyoutAvailability.unavailable;
+      throw const FormatException('Invalid self-buyout availability response');
     } on DioException catch (e) {
       debugPrint('getAvailability error: $e');
-      return SelfBuyoutAvailability.unavailable;
+      rethrow;
     }
   }
 
@@ -94,31 +99,61 @@ class SelfBuyoutService {
     required String fileName,
     required String fileMime,
   }) async {
-    final map = <String, dynamic>{
-      'clientCodeId': clientCodeId.toString(),
-      'amountEnteredIn': amountEnteredIn,
-      'amount': amount.toString(),
-      'warningAccepted': warningAccepted.toString(),
-      if (alipayTopUpExperienced != null)
-        'alipayTopUpExperienced': alipayTopUpExperienced.toString(),
-    };
-    final parts = fileMime.split('/');
-    map['transferQr'] = MultipartFile.fromBytes(
-      fileBytes,
-      filename: fileName,
-      contentType: MediaType(
-        parts.isNotEmpty ? parts[0] : 'image',
-        parts.length > 1 ? parts[1] : 'jpeg',
-      ),
-    );
-    final formData = FormData.fromMap(map);
-    final res = await _apiClient.post(
-      '/client/self-buyout/requests',
-      data: formData,
-      options: Options(headers: {'Content-Type': 'multipart/form-data'}),
-    );
-    return SelfBuyoutRequest.fromJson(
-      res.data['request'] as Map<String, dynamic>,
+    return AnalyticsService.traceOperation(
+      WorkflowAction.selfBuyoutCreate,
+      () async {
+        // Persist the intention before sending money instructions. A lost response or
+        // reopening the form retries the same key; changing any field starts a new intention.
+        final fingerprint = sha256
+            .convert(
+              utf8.encode(
+                jsonEncode([
+                  clientCodeId,
+                  amountEnteredIn,
+                  amount,
+                  warningAccepted,
+                  alipayTopUpExperienced,
+                  fileMime,
+                  sha256.convert(fileBytes).toString(),
+                ]),
+              ),
+            )
+            .toString();
+        final preferences = await SharedPreferences.getInstance();
+        final preferenceKey = 'self_buyout.pending.v1.$fingerprint';
+        final requestKey =
+            preferences.getString(preferenceKey) ?? const Uuid().v4();
+        await preferences.setString(preferenceKey, requestKey);
+        final map = <String, dynamic>{
+          'clientRequestKey': requestKey,
+          'clientCodeId': clientCodeId.toString(),
+          'amountEnteredIn': amountEnteredIn,
+          'amount': amount.toString(),
+          'warningAccepted': warningAccepted.toString(),
+          if (alipayTopUpExperienced != null)
+            'alipayTopUpExperienced': alipayTopUpExperienced.toString(),
+        };
+        final parts = fileMime.split('/');
+        map['transferQr'] = MultipartFile.fromBytes(
+          fileBytes,
+          filename: fileName,
+          contentType: MediaType(
+            parts.isNotEmpty ? parts[0] : 'image',
+            parts.length > 1 ? parts[1] : 'jpeg',
+          ),
+        );
+        final formData = FormData.fromMap(map);
+        final res = await _apiClient.post(
+          '/client/self-buyout/requests',
+          data: formData,
+          options: Options(headers: {'Content-Type': 'multipart/form-data'}),
+        );
+        final created = SelfBuyoutRequest.fromJson(
+          res.data['request'] as Map<String, dynamic>,
+        );
+        await preferences.remove(preferenceKey);
+        return created;
+      },
     );
   }
 
@@ -151,16 +186,23 @@ class SelfBuyoutService {
 
   /// Старт QR-оплаты по заявке. Идемпотентно на бэке.
   Future<SelfBuyoutPaymentInfo?> startBankQr(int requestId) async {
-    final res = await _apiClient.post(
-      '/client/self-buyout/requests/$requestId/bank-qr/start',
-      data: const <String, dynamic>{},
+    return AnalyticsService.traceOperation(
+      WorkflowAction.paymentQrStart,
+      () async {
+        final res = await _apiClient.post(
+          '/client/self-buyout/requests/$requestId/bank-qr/start',
+          data: const <String, dynamic>{},
+        );
+        if (res.statusCode == 200 && res.data is Map) {
+          return SelfBuyoutPaymentInfo.fromStartJson(
+            res.data as Map<String, dynamic>,
+          );
+        }
+        return null;
+      },
+      outcome: (result) =>
+          result != null ? WorkflowStage.succeeded : WorkflowStage.failed,
     );
-    if (res.statusCode == 200 && res.data is Map) {
-      return SelfBuyoutPaymentInfo.fromStartJson(
-        res.data as Map<String, dynamic>,
-      );
-    }
-    return null;
   }
 
   Future<bool> uploadReceipt({
@@ -169,23 +211,30 @@ class SelfBuyoutService {
     required String fileName,
     required String mimeType,
   }) async {
-    final parts = mimeType.split('/');
-    final formData = FormData.fromMap({
-      'file': MultipartFile.fromBytes(
-        bytes,
-        filename: fileName,
-        contentType: MediaType(
-          parts.isNotEmpty ? parts[0] : 'application',
-          parts.length > 1 ? parts[1] : 'octet-stream',
-        ),
-      ),
-    });
-    final res = await _apiClient.post(
-      '/client/self-buyout/payments/$paymentId/receipt',
-      data: formData,
-      options: Options(headers: {'Content-Type': 'multipart/form-data'}),
+    return AnalyticsService.traceOperation(
+      WorkflowAction.paymentReceipt,
+      () async {
+        final parts = mimeType.split('/');
+        final formData = FormData.fromMap({
+          'file': MultipartFile.fromBytes(
+            bytes,
+            filename: fileName,
+            contentType: MediaType(
+              parts.isNotEmpty ? parts[0] : 'application',
+              parts.length > 1 ? parts[1] : 'octet-stream',
+            ),
+          ),
+        });
+        final res = await _apiClient.post(
+          '/client/self-buyout/payments/$paymentId/receipt',
+          data: formData,
+          options: Options(headers: {'Content-Type': 'multipart/form-data'}),
+        );
+        return res.statusCode == 200;
+      },
+      outcome: (result) =>
+          result ? WorkflowStage.succeeded : WorkflowStage.failed,
     );
-    return res.statusCode == 200;
   }
 
   Future<bool> cancel(int requestId) async {

@@ -1,3 +1,4 @@
+import 'sp_status_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -684,7 +685,9 @@ class _CustomerPurchaseCard extends StatelessWidget {
                             purchase.kind,
                           ),
                         ),
-                        _HistoryChip(label: _statusLabel(purchase.status)),
+                        _HistoryChip(
+                          label: spStatusText(context, purchase.status),
+                        ),
                         if (purchase.createdAt != null)
                           _HistoryChip(
                             label: DateFormat(
@@ -742,7 +745,7 @@ class _CustomerPurchaseCard extends StatelessWidget {
                   .take(3)
                   .map(
                     (item) =>
-                        '${item.quantity}× ${item.title} · ${_statusLabel(item.status)}',
+                        '${item.quantity}× ${item.title} · ${spStatusText(context, item.status)}',
                   )
                   .toList(growable: false),
             ),
@@ -760,7 +763,7 @@ class _CustomerPurchaseCard extends StatelessWidget {
                   .take(3)
                   .map(
                     (payment) =>
-                        '${_statusLabel(payment.title)} · ${_rub(context, payment.amountRub)} · ${_statusLabel(payment.status)}',
+                        '${spStatusText(context, payment.title)} · ${_rub(context, payment.amountRub)} · ${spStatusText(context, payment.status)}',
                   )
                   .toList(growable: false),
             ),
@@ -780,7 +783,7 @@ class _CustomerPurchaseCard extends StatelessWidget {
                     (shipment) => [
                       shipment.title,
                       shipment.trackingNumber,
-                      _statusLabel(shipment.status),
+                      spStatusText(context, shipment.status),
                     ].whereType<String>().join(' · '),
                   )
                   .toList(growable: false),
@@ -927,8 +930,6 @@ class _DetailUnavailableCard extends StatelessWidget {
     );
   }
 }
-
-String _statusLabel(String value) => value.replaceAll('_', ' ').trim();
 
 String _rub(BuildContext context, double value) {
   final locale = Localizations.localeOf(context).languageCode;

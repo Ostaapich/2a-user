@@ -197,6 +197,31 @@ Future<_FakeRepository> _pumpScreen(
 }
 
 void main() {
+  testWidgets('retry reloads capabilities after a failed initial check', (
+    tester,
+  ) async {
+    final repository = _RetryRepository();
+    await tester.pumpWidget(
+      ProviderScope(
+        retry: (_, _) => null,
+        overrides: [
+          companyNameProvider.overrideWithValue('Partner Cargo'),
+          spOrganizerRepositoryProvider.overrideWithValue(repository),
+        ],
+        child: const MaterialApp(
+          home: Scaffold(body: SpOrganizerAnalyticsScreen(embedded: true)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Аналитика временно недоступна'), findsOneWidget);
+    await tester.tap(find.text('Повторить'));
+    await tester.pumpAndSettle();
+    expect(repository.checks, 2);
+    expect(repository.lastFilter, isNotNull);
+    expect(find.text('Аналитика временно недоступна'), findsNothing);
+  });
+
   testWidgets('embedded analytics tab omits the duplicate hero', (
     tester,
   ) async {
@@ -326,4 +351,13 @@ void main() {
     expect(find.text('Крупнейшие закупки'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+}
+
+class _RetryRepository extends _FakeRepository {
+  int checks = 0;
+  @override
+  Future<SpOrganizerCapabilities> getCapabilities() async {
+    if (++checks == 1) throw StateError('network unavailable');
+    return _capabilities;
+  }
 }

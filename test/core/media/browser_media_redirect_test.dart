@@ -17,10 +17,7 @@ void main() {
       final dio = Dio(
         BaseOptions(
           baseUrl: '$origin/api',
-          headers: {
-            'Authorization': 'Bearer fixture-test-only',
-            'X-Warehouse-Protocol': '1',
-          },
+          headers: {'Authorization': 'Bearer fixture-test-only'},
         ),
       );
       dio.httpClientAdapter = StrictMediaBrowserAdapter(

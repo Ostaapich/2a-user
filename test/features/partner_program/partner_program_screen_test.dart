@@ -52,6 +52,7 @@ void main() {
     expect(find.textContaining('Код партнёра'), findsNothing);
     expect(find.text('Активна'), findsNothing);
     expect(find.text('Партнёрский префикс'), findsOneWidget);
+    expect(find.text('Доступно к выплате'), findsOneWidget);
     expect(find.text('PA'), findsWidgets);
     expect(find.textContaining('За всё время'), findsNothing);
     expect(find.text('9 клиентов'), findsNothing);
@@ -87,7 +88,6 @@ void main() {
     expect(find.text('45.750 кг'), findsOneWidget);
     expect(find.text('Оплачено'), findsOneWidget);
     expect(find.text('18.250 кг'), findsOneWidget);
-    expect(find.text('Доступно к выплате'), findsWidgets);
     expect(find.text('Выплачено'), findsWidgets);
     expect(find.text('Ставка'), findsOneWidget);
     expect(find.text('0.2500 USD/кг'), findsOneWidget);
@@ -108,6 +108,7 @@ void main() {
     expect(find.text('合作伙伴计划'), findsOneWidget);
     expect(find.text('您的合作伙伴中心'), findsNothing);
     expect(find.text('合作伙伴前缀'), findsOneWidget);
+    expect(find.text('可提现金额'), findsOneWidget);
     expect(find.text('PA'), findsWidgets);
     expect(find.text('邀请链接'), findsOneWidget);
     await tester.scrollUntilVisible(
@@ -121,7 +122,6 @@ void main() {
     expect(find.text('45.750 公斤'), findsOneWidget);
     expect(find.text('已付款重量'), findsOneWidget);
     expect(find.text('18.250 公斤'), findsOneWidget);
-    expect(find.text('可提现'), findsWidgets);
     expect(find.text('已支付'), findsWidgets);
     expect(find.text('费率'), findsOneWidget);
     expect(find.text('佣金规则'), findsNothing);

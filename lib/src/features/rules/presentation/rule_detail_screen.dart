@@ -7,9 +7,11 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/network/api_config.dart';
 import '../../../core/ui/app_colors.dart';
+import '../../../core/ui/app_toast.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/blurred_media_backdrop.dart';
 import '../../../core/ui/scroll_to_top_button.dart';
+import '../../../core/ui/searchable_document.dart';
 import '../../../core/ui/tutorial_card.dart';
 import '../../../core/utils/error_utils.dart';
 import '../../../core/utils/locale_text.dart';
@@ -167,7 +169,7 @@ class _RuleDetailScreenState extends ConsumerState<RuleDetailScreen> {
                 icon: Icons.rule_rounded,
                 title: item.title,
                 subtitle: orderLabel,
-                titleMaxLines: 3,
+                titleMaxLines: null,
               ),
               const SizedBox(height: 14),
               _RuleContentCard(
@@ -211,26 +213,56 @@ class _RuleContentCard extends StatelessWidget {
       decoration: RulesUi.cardDecoration(),
       padding: const EdgeInsets.all(16),
       child: hasContent
-          ? MarkdownBody(
-              data: content,
-              selectable: true,
-              styleSheet: _markdownStyleSheet(context),
-              onTapLink: (text, href, title) {
-                final uri = Uri.tryParse(href ?? '');
-                if (uri == null) return;
-                launchUrl(uri, mode: LaunchMode.externalApplication);
-              },
-              imageBuilder: (uri, title, alt) {
-                final raw = uri.toString();
-                final imageUrl =
-                    raw.startsWith('http://') || raw.startsWith('https://')
-                    ? raw
-                    : ApiConfig.getMediaUrl(raw);
-                return _RuleMarkdownImage(
-                  imageUrl: imageUrl,
-                  onTap: () => onImageTap(imageUrl),
-                );
-              },
+          ? SearchableDocument(
+              contentIdentity: content,
+              child: MarkdownBody(
+                data: content,
+                selectable: true,
+                styleSheet: _markdownStyleSheet(context),
+                onTapLink: (text, href, title) async {
+                  final uri = Uri.tryParse(href ?? '');
+                  var opened = false;
+                  try {
+                    if (uri != null &&
+                        const {
+                          'https',
+                          'http',
+                          'mailto',
+                          'tel',
+                        }.contains(uri.scheme)) {
+                      opened = await launchUrl(
+                        uri,
+                        mode: LaunchMode.externalApplication,
+                      );
+                    }
+                  } catch (_) {
+                    /* A missing handler is actionable in the reader. */
+                  }
+                  if (!context.mounted) return;
+                  if (!opened) {
+                    AppToast.show(
+                      context,
+                      tr(
+                        context,
+                        ru: 'Не удалось открыть ссылку. Попробуйте открыть её в браузере.',
+                        zh: '无法打开链接，请尝试在浏览器中打开。',
+                      ),
+                      isError: true,
+                    );
+                  }
+                },
+                imageBuilder: (uri, title, alt) {
+                  final raw = uri.toString();
+                  final imageUrl =
+                      raw.startsWith('http://') || raw.startsWith('https://')
+                      ? raw
+                      : ApiConfig.getMediaUrl(raw);
+                  return _RuleMarkdownImage(
+                    imageUrl: imageUrl,
+                    onTap: () => onImageTap(imageUrl),
+                  );
+                },
+              ),
             )
           : Container(
               width: double.infinity,

@@ -1,3 +1,4 @@
+import '../../../core/services/analytics_service.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_target.dart';
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
@@ -68,6 +69,17 @@ class SelfBuyoutCreateSheet extends ConsumerStatefulWidget {
 }
 
 class _SelfBuyoutCreateSheetState extends ConsumerState<SelfBuyoutCreateSheet> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.correctionRequest == null) {
+      AnalyticsService.trackFunnel(
+        WorkflowAction.selfBuyoutCreate,
+        WorkflowStage.viewed,
+      );
+    }
+  }
+
   final _cnyCtrl = TextEditingController();
   final _rubCtrl = TextEditingController();
   bool _syncing = false;
@@ -354,6 +366,19 @@ class _SelfBuyoutCreateSheetState extends ConsumerState<SelfBuyoutCreateSheet> {
               ru: 'Для первого пополнения максимальная сумма — ${_formatAmount(serverMaxCny)} ¥',
               zh: '首次充值最高金额为 ${_formatAmount(serverMaxCny)} ¥',
             )
+          : code == 'REQUEST_IN_PROGRESS'
+          ? tr(
+              context,
+              ru: 'Заявка ещё создаётся. Повторите через несколько секунд — повтор не создаст новую заявку.',
+              zh: '申请正在创建。请稍后重试，重复操作不会新建申请。',
+            )
+          : (e.response == null || (e.response?.statusCode ?? 0) >= 500) &&
+                !_isCorrection
+          ? tr(
+              context,
+              ru: 'Не удалось подтвердить создание заявки. Повторите с теми же данными — повтор не создаст дубликат.',
+              zh: '无法确认申请是否创建成功。请使用相同数据重试，不会重复创建。',
+            )
           : data['error']?.toString();
       AppToast.show(
         context,
@@ -365,6 +390,18 @@ class _SelfBuyoutCreateSheetState extends ConsumerState<SelfBuyoutCreateSheet> {
                     zh: '无法更新收款信息',
                   )
                 : tr(context, ru: 'Не удалось создать заявку', zh: '无法创建申请')),
+        isError: true,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      AppToast.show(
+        context,
+        tr(
+          context,
+          ru: 'Не удалось завершить запрос. Данные сохранены в форме, попробуйте ещё раз.',
+          zh: '无法完成请求。表单数据已保留，请重试。',
+        ),
         isError: true,
       );
     }
@@ -897,8 +934,8 @@ class _SelfBuyoutCreateSheetState extends ConsumerState<SelfBuyoutCreateSheet> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${request.requestedCnyAmount.toStringAsFixed(2)} RMB · '
-            '${request.paymentRubAmount.toStringAsFixed(2)} ₽',
+            '${formatSelfBuyoutMoney(context, request.requestedCnyAmount)} RMB · '
+            '${formatSelfBuyoutMoney(context, request.paymentRubAmount)} ₽',
             style: const TextStyle(
               color: AppColors.textPrimary,
               fontFamily: 'Gilroy',

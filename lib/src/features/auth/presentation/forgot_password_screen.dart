@@ -1,5 +1,7 @@
+import '../../../core/services/analytics_service.dart';
 import 'dart:async';
 import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
 import 'package:flutter/services.dart';
@@ -13,9 +15,12 @@ import '../../../core/services/agent_domain_resolver.dart';
 import '../../../core/ui/app_background.dart';
 import '../../../core/ui/phone_input_field.dart';
 import '../../../core/utils/error_utils.dart';
+import '../../../core/utils/locale_text.dart';
 import '../data/auth_provider.dart';
 import '../data/partner_link_provider.dart';
+import '../data/auth_input_safety.dart';
 import 'auth_visuals.dart';
+import 'auth_verification_help.dart';
 
 /// Этапы восстановления пароля
 enum ResetStep {
@@ -33,7 +38,8 @@ class ForgotPasswordScreen extends ConsumerStatefulWidget {
       _ForgotPasswordScreenState();
 }
 
-class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
+class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen>
+    with WidgetsBindingObserver {
   late final PhoneController _phoneCtrl;
   final _domainCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
@@ -51,9 +57,9 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   String? _checkId;
   String? _callPhone;
   String? _callPhonePretty;
-  // ignore: unused_field
   DateTime? _expiresAt;
   String? _resetToken;
+  bool _checkingCall = false;
   Timer? _pollTimer;
   Timer? _countdownTimer;
   int _secondsLeft = 300; // 5 минут
@@ -61,6 +67,12 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   @override
   void initState() {
     super.initState();
+    AnalyticsService.trackFunnel(
+      WorkflowAction.passwordRecovery,
+      WorkflowStage.viewed,
+    );
+    WidgetsBinding.instance.addObserver(this);
+    AppToast.hide();
     _phoneCtrl = PhoneController(
       initialValue: const PhoneNumber(isoCode: IsoCode.RU, nsn: ''),
     );
@@ -69,7 +81,15 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
         : AgentDomainResolver.currentAgentDomain;
     if (detectedDomain != null) {
       _domainCtrl.text = detectedDomain;
+    } else {
+      unawaited(_restoreLastCompany());
     }
+  }
+
+  Future<void> _restoreLastCompany() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted || _domainCtrl.text.isNotEmpty) return;
+    _domainCtrl.text = prefs.getString('last_company_domain') ?? '';
   }
 
   void _cancelTimers() {
@@ -81,6 +101,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _phoneCtrl.dispose();
     _domainCtrl.dispose();
     _passwordCtrl.dispose();
@@ -154,9 +175,13 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
           _checkId = data['checkId'];
           _callPhone = data['callPhone'];
           _callPhonePretty = data['callPhonePretty'];
-          _expiresAt = DateTime.tryParse(data['expiresAt'] ?? '');
+          _expiresAt =
+              DateTime.tryParse(data['expiresAt'] ?? '') ??
+              DateTime.now().add(const Duration(minutes: 5));
           _currentStep = ResetStep.waitingCall;
-          _secondsLeft = 300;
+          _secondsLeft = verificationSecondsLeft(
+            _expiresAt ?? DateTime.now().add(const Duration(minutes: 5)),
+          );
           _isLoading = false;
         });
 
@@ -192,30 +217,50 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   /// Обратный отсчёт
   void _startCountdown() {
     _countdownTimer?.cancel();
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      if (_secondsLeft > 0) {
-        setState(() => _secondsLeft--);
-      } else {
-        _cancelTimers();
-        _showError('Время истекло. Попробуйте снова.');
-        setState(() => _currentStep = ResetStep.enterPhone);
-      }
-    });
+    _countdownTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _refreshDeadline(),
+    );
+  }
+
+  void _refreshDeadline() {
+    if (!mounted || _currentStep != ResetStep.waitingCall) return;
+    final seconds = verificationSecondsLeft(_expiresAt ?? DateTime.now());
+    if (seconds == 0) {
+      _cancelTimers();
+      _showError(
+        tr(
+          context,
+          ru: 'Время истекло. Запросите новый звонок.',
+          zh: '验证已过期，请重新请求通话。',
+        ),
+      );
+      setState(() => _currentStep = ResetStep.enterPhone);
+    } else {
+      setState(() => _secondsLeft = seconds);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    _refreshDeadline();
+    if (_currentStep == ResetStep.waitingCall) unawaited(_checkCallStatus());
   }
 
   /// Проверить статус звонка
   Future<void> _checkCallStatus() async {
-    if (_checkId == null) return;
-
+    final checkId = _checkId;
+    if (checkId == null || _checkingCall) return;
+    _checkingCall = true;
     try {
       final apiClient = ref.read(apiClientProvider);
       final response = await apiClient.post(
         '/password-reset/verify',
-        data: {'checkId': _checkId},
+        data: {'checkId': checkId},
       );
 
-      if (!mounted) return;
+      if (!mounted || _checkId != checkId) return;
 
       if (response.statusCode == 200 && response.data != null) {
         final data = response.data;
@@ -232,7 +277,9 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
         }
       }
     } catch (e) {
-      // Игнорируем ошибки polling
+      // Temporary polling errors do not discard the recovery form.
+    } finally {
+      _checkingCall = false;
     }
   }
 
@@ -255,9 +302,16 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
 
     try {
       final apiClient = ref.read(apiClientProvider);
-      final response = await apiClient.post(
-        '/password-reset/complete',
-        data: {'resetToken': _resetToken, 'newPassword': password},
+      final response = await AnalyticsService.traceOperation(
+        WorkflowAction.passwordRecovery,
+        () => apiClient.post(
+          '/password-reset/complete',
+          data: {'resetToken': _resetToken, 'newPassword': password},
+        ),
+        outcome: (response) =>
+            response.statusCode == 200 && response.data is Map
+            ? WorkflowStage.succeeded
+            : WorkflowStage.failed,
       );
 
       if (!mounted) return;
@@ -279,7 +333,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
 
           if (success) {
             // Перенаправляем в приложение
-            context.go('/');
+            // The auth router restores the original destination.
             return;
           }
         }
@@ -364,97 +418,105 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
     final bottomPadding = MediaQuery.paddingOf(context).bottom;
     final topPadding = MediaQuery.paddingOf(context).top;
 
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          const AppBackground(),
-          GestureDetector(
-            onTap: () => FocusScope.of(context).unfocus(),
-            child: SingleChildScrollView(
-              padding: EdgeInsets.fromLTRB(
-                24,
-                topPadding + 28,
-                24,
-                bottomPadding + 24,
-              ),
-              child: AuthResponsiveContent(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: GestureDetector(
-                        onTap: () {
-                          if (_currentStep == ResetStep.enterPhone ||
-                              _currentStep == ResetStep.success) {
-                            context.pop();
-                          } else {
-                            _cancelTimers();
-                            setState(() => _currentStep = ResetStep.enterPhone);
-                          }
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.82),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.78),
+    return AutofillGroup(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Stack(
+          children: [
+            const AppBackground(),
+            GestureDetector(
+              onTap: () => FocusScope.of(context).unfocus(),
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  24,
+                  topPadding + 28,
+                  24,
+                  bottomPadding + 24,
+                ),
+                child: AuthResponsiveContent(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: GestureDetector(
+                          onTap: () {
+                            if (_currentStep == ResetStep.enterPhone ||
+                                _currentStep == ResetStep.success) {
+                              context.pop();
+                            } else {
+                              _cancelTimers();
+                              setState(
+                                () => _currentStep = ResetStep.enterPhone,
+                              );
+                            }
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 10,
                             ),
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Color(0x0A000000),
-                                blurRadius: 10,
-                                offset: Offset(0, 4),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.82),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.78),
                               ),
-                            ],
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.arrow_back_ios_rounded,
-                                size: 16,
-                                color: Color(0xFF666666),
-                              ),
-                              SizedBox(width: 4),
-                              Text(
-                                'Назад',
-                                style: TextStyle(
-                                  color: Color(0xFF666666),
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Color(0x0A000000),
+                                  blurRadius: 10,
+                                  offset: Offset(0, 4),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.arrow_back_ios_rounded,
+                                  size: 16,
+                                  color: Color(0xFF666666),
+                                ),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Назад',
+                                  style: TextStyle(
+                                    color: Color(0xFF666666),
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 24),
-                    AuthHeroHeader(
-                      icon: _getHeroIcon(),
-                      title: _getTitle(),
-                      subtitle: _getSubtitle(),
-                      trustItems: _getTrustItems(),
-                    ),
-                    const SizedBox(height: 28),
-
-                    AuthFormCard(
-                      child: _buildContent(
-                        partnerLinkActive: partnerLinkActive,
+                      const SizedBox(height: 24),
+                      AuthHeroHeader(
+                        icon: _getHeroIcon(),
+                        title: _getTitle(),
+                        subtitle: _getSubtitle(),
+                        trustItems: _getTrustItems(),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 28),
+
+                      AuthFormCard(
+                        child: Column(
+                          children: [
+                            _buildContent(partnerLinkActive: partnerLinkActive),
+                            if (_currentStep != ResetStep.success)
+                              AuthVerificationHelp(company: _effectiveDomain),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -507,7 +569,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   String _getTitle() {
     switch (_currentStep) {
       case ResetStep.enterPhone:
-        return 'Вход по телефону';
+        return tr(context, ru: 'Восстановление доступа', zh: '恢复账户访问');
       case ResetStep.waitingCall:
         return 'Подтвердите номер';
       case ResetStep.enterPassword:
@@ -708,7 +770,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
                     SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Изменить пароль на постоянный можно в настройках профиля',
+                        'После подтверждения номера вы зададите новый пароль для входа',
                         style: TextStyle(
                           fontSize: 11,
                           color: Color(0xFF666666),
@@ -919,6 +981,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
           ),
           child: TextField(
             controller: _passwordCtrl,
+            autofillHints: const [AutofillHints.newPassword],
             obscureText: _obscurePassword,
             decoration: InputDecoration(
               hintText: 'Минимум 6 символов',
@@ -928,6 +991,11 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
               ),
               prefixIcon: Icon(Icons.lock_rounded, color: accent, size: 20),
               suffixIcon: IconButton(
+                tooltip: tr(
+                  context,
+                  ru: _obscurePassword ? 'Показать пароль' : 'Скрыть пароль',
+                  zh: _obscurePassword ? '显示密码' : '隐藏密码',
+                ),
                 icon: Icon(
                   _obscurePassword ? Icons.visibility_off : Icons.visibility,
                   color: const Color(0xFF999999),
@@ -962,6 +1030,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
           ),
           child: TextField(
             controller: _confirmPasswordCtrl,
+            autofillHints: const [AutofillHints.newPassword],
             obscureText: _obscureConfirm,
             decoration: InputDecoration(
               hintText: 'Повторите пароль',
@@ -971,6 +1040,11 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
               ),
               prefixIcon: Icon(Icons.lock_rounded, color: accent, size: 20),
               suffixIcon: IconButton(
+                tooltip: tr(
+                  context,
+                  ru: _obscureConfirm ? 'Показать пароль' : 'Скрыть пароль',
+                  zh: _obscureConfirm ? '显示密码' : '隐藏密码',
+                ),
                 icon: Icon(
                   _obscureConfirm ? Icons.visibility_off : Icons.visibility,
                   color: const Color(0xFF999999),

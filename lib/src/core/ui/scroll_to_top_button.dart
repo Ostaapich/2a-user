@@ -1,5 +1,39 @@
 import 'package:flutter/material.dart';
 
+import 'app_keyboard_dismiss.dart';
+
+/// The page owner supplies its painted bottom navigation extent, including the
+/// system safe area. Root pages without a bottom bar use their own safe area.
+class ScrollToTopViewport extends InheritedWidget {
+  const ScrollToTopViewport({
+    super.key,
+    required this.bottomObstruction,
+    required this.safeAreaBottom,
+    required super.child,
+  });
+
+  final double bottomObstruction;
+  final double safeAreaBottom;
+
+  static double bottomInsetOf(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<ScrollToTopViewport>();
+    final safeBottom = MediaQuery.paddingOf(context).bottom;
+    if (scope == null) return safeBottom;
+    // A descendant SafeArea can already have consumed the same system inset.
+    final consumed = (scope.safeAreaBottom - safeBottom).clamp(
+      0.0,
+      scope.safeAreaBottom,
+    );
+    return (scope.bottomObstruction - consumed).clamp(0.0, double.infinity);
+  }
+
+  @override
+  bool updateShouldNotify(ScrollToTopViewport oldWidget) =>
+      bottomObstruction != oldWidget.bottomObstruction ||
+      safeAreaBottom != oldWidget.safeAreaBottom;
+}
+
 /// Кнопка «Наверх» — появляется при прокрутке вниз.
 /// Использовать внутри Stack:
 /// ```dart
@@ -60,14 +94,18 @@ class _ScrollToTopButtonState extends State<ScrollToTopButton> {
 
   @override
   Widget build(BuildContext context) {
+    final visible =
+        _visible && !AppKeyboardDismissRegion.isKeyboardVisibleOf(context);
     return Positioned(
       left: 16,
-      bottom: widget.bottomOffset ?? MediaQuery.of(context).padding.bottom + 16,
+      bottom:
+          widget.bottomOffset ??
+          ScrollToTopViewport.bottomInsetOf(context) + 24,
       child: AnimatedOpacity(
-        opacity: _visible ? 1.0 : 0.0,
+        opacity: visible ? 1.0 : 0.0,
         duration: const Duration(milliseconds: 200),
         child: IgnorePointer(
-          ignoring: !_visible,
+          ignoring: !visible,
           child: GestureDetector(
             onTap: () {
               widget.controller.animateTo(

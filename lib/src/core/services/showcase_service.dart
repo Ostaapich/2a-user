@@ -235,6 +235,25 @@ class ShowcaseService {
     await _prefs.setBool(_firstLoginKey, true);
   }
 
+  String _scopedTermsKey(String accountScope, String revision) =>
+      'terms_accepted_v2:${Uri.encodeComponent(accountScope)}:$revision';
+
+  bool hasAcceptedTermsFor({
+    required String accountScope,
+    required String revision,
+  }) => _prefs.containsKey(_scopedTermsKey(accountScope, revision));
+
+  Future<void> acceptTermsFor({
+    required String accountScope,
+    required String revision,
+  }) async {
+    final saved = await _prefs.setString(
+      _scopedTermsKey(accountScope, revision),
+      DateTime.now().toUtc().toIso8601String(),
+    );
+    if (!saved) throw StateError('Terms acceptance was not saved');
+  }
+
   bool get hasAcceptedTerms => _prefs.getBool(_termsAcceptedKey) ?? false;
 
   Future<void> acceptTerms() async {

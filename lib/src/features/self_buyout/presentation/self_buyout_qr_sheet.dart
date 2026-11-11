@@ -1,5 +1,6 @@
+import '../../payments/utils/payment_qr_image.dart';
+import '../../../core/services/analytics_service.dart';
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -24,12 +25,14 @@ class SelfBuyoutQrSheet extends ConsumerStatefulWidget {
   final int requestId;
   final String requestNumber;
   final double cnyAmount;
+  final bool hasExistingPayment;
 
   const SelfBuyoutQrSheet({
     super.key,
     required this.requestId,
     required this.requestNumber,
     required this.cnyAmount,
+    this.hasExistingPayment = false,
   });
 
   @override
@@ -51,6 +54,10 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
   @override
   void initState() {
     super.initState();
+    AnalyticsService.trackFunnel(
+      WorkflowAction.paymentQrStart,
+      WorkflowStage.viewed,
+    );
     Future<void>.microtask(_start);
   }
 
@@ -61,7 +68,7 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
         await ref.read(paymentOperatorStatusProvider.future) ??
         PaymentOperatorStatus.workingFallback;
     if (!mounted) return;
-    if (operatorStatus.sleeping) {
+    if (operatorStatus.sleeping && !widget.hasExistingPayment) {
       setState(() {
         _loading = false;
         _error = null;
@@ -73,9 +80,10 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
       _error = null;
     });
     try {
-      final res = await ref
-          .read(selfBuyoutServiceProvider)
-          .startBankQr(widget.requestId);
+      final service = ref.read(selfBuyoutServiceProvider);
+      final res = operatorStatus.sleeping
+          ? (await service.getDetail(widget.requestId)).payment
+          : await service.startBankQr(widget.requestId);
       if (!mounted) return;
       if (res == null) {
         setState(() {
@@ -90,7 +98,10 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
       });
       if (!_timingWarningShown) {
         _timingWarningShown = true;
-        await showPaymentQrTimingWarning(context);
+        await showPaymentQrTimingWarning(
+          context,
+          paymentAttemptKey: 'self-buyout:${widget.requestId}:${res.paymentId}',
+        );
       }
     } on DioException {
       if (!mounted) return;
@@ -118,32 +129,10 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
     if (res == null || _downloadingQr) return;
     setState(() => _downloadingQr = true);
     try {
-      final painter = QrPainter(
-        data: res.qrPayload,
-        version: QrVersions.auto,
-        gapless: true,
-      );
-      const imageSize = 1024.0;
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      canvas.drawColor(Colors.white, BlendMode.src);
-      painter.paint(canvas, const Size(imageSize, imageSize));
-      final image = await recorder.endRecording().toImage(
-        imageSize.toInt(),
-        imageSize.toInt(),
-      );
-      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      final bytes = await createPaymentQrImage(payload: res.qrPayload);
       if (!mounted) return;
-      if (data == null) {
-        AppToast.show(
-          context,
-          tr(context, ru: 'Не удалось подготовить QR', zh: '无法生成二维码'),
-          isError: true,
-        );
-        return;
-      }
       final saveResult = await saveImageToGallery(
-        bytes: data.buffer.asUint8List(),
+        bytes: bytes,
         fileName: _qrFileName,
       );
       if (!mounted) return;
@@ -180,13 +169,28 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
   }
 
   Future<void> _pickReceipt() async {
-    final receipt = await pickPaymentReceipt(context);
-    if (!mounted || receipt == null) return;
-    setState(() {
-      _fileBytes = receipt.bytes;
-      _fileName = receipt.fileName;
-      _fileMime = receipt.mimeType;
-    });
+    if (_uploading) return;
+    setState(() => _uploading = true);
+    try {
+      final receipt = await pickPaymentReceipt(context);
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      if (receipt == null) return;
+      setState(() {
+        _fileBytes = receipt.bytes;
+        _fileName = receipt.fileName;
+        _fileMime = receipt.mimeType;
+      });
+      await _confirmPaid();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      AppToast.show(
+        context,
+        tr(context, ru: 'Не удалось выбрать чек', zh: '无法选择付款凭证'),
+        isError: true,
+      );
+    }
   }
 
   Future<void> _confirmPaid() async {
@@ -218,12 +222,22 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
         tr(context, ru: 'Чек отправлен на проверку', zh: '凭证已提交审核'),
       );
       Navigator.of(context).pop(true);
-    } on DioException {
+    } catch (error) {
       if (!mounted) return;
       setState(() => _uploading = false);
       AppToast.show(
         context,
-        tr(context, ru: 'Ошибка отправки чека', zh: '发送凭证出错'),
+        error is DioException && error.response?.statusCode == 409
+            ? tr(
+                context,
+                ru: 'Платёж изменился. Обновите данные и проверьте статус чека.',
+                zh: '付款状态已变更，请刷新并查看凭证状态。',
+              )
+            : tr(
+                context,
+                ru: 'Ошибка отправки чека. Повторите отправку.',
+                zh: '发送凭证出错，请重试。',
+              ),
         isError: true,
       );
     }
@@ -268,7 +282,7 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
                 keyboardDismissBehavior:
                     ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: operatorsSleeping
+                child: operatorsSleeping && _result == null
                     ? const PaymentOperatorSleepingNotice()
                     : _loading
                     ? _SelfBuyoutCard(
@@ -286,7 +300,7 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
             ),
             Padding(
               padding: EdgeInsets.fromLTRB(16, 10, 16, 12 + bottomPadding),
-              child: operatorsSleeping
+              child: operatorsSleeping && _result == null
                   ? SelfBuyoutSecondaryButton(
                       label: tr(context, ru: 'Закрыть', zh: '关闭'),
                       icon: Icons.close_rounded,
@@ -334,39 +348,57 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        const PaymentQrTimingNotice(),
+        if (paymentOperatorStatusOrWorking(
+          ref.watch(paymentOperatorStatusProvider),
+        ).sleeping)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              tr(
+                context,
+                ru: 'Операторы отдыхают. Если вы уже оплатили, отправьте чек сейчас. Его проверят после возобновления работы.',
+                zh: '付款人员正在休息。如果您已经付款，请立即提交凭证。恢复工作后将进行审核。',
+              ),
+            ),
+          ),
         _SelfBuyoutCard(
           icon: Icons.qr_code_2_rounded,
           title: tr(context, ru: 'QR для оплаты', zh: '付款二维码'),
           child: Column(
             children: [
-              Center(
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(22),
-                    border: Border.all(
-                      color: Colors.black.withValues(alpha: 0.04),
+              const PaymentRecipientWarning(),
+              if (res.qrPayload.isNotEmpty)
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: 0.04),
+                      ),
                     ),
-                  ),
-                  child: QrImageView(
-                    data: res.qrPayload,
-                    version: QrVersions.auto,
-                    size: 220,
-                    backgroundColor: Colors.white,
-                    errorStateBuilder: (context, error) => SizedBox(
-                      width: 220,
-                      height: 220,
-                      child: Center(
-                        child: Text(tr(context, ru: 'Ошибка QR', zh: 'QR 错误')),
+                    child: QrImageView(
+                      data: res.qrPayload,
+                      version: QrVersions.auto,
+                      size: 220,
+                      backgroundColor: Colors.white,
+                      errorStateBuilder: (context, error) => SizedBox(
+                        width: 220,
+                        height: 220,
+                        child: Center(
+                          child: Text(
+                            tr(context, ru: 'Ошибка QR', zh: 'QR 错误'),
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
               const SizedBox(height: 10),
               Text(
-                '${res.amountRub.toStringAsFixed(2)} ₽',
+                '${formatSelfBuyoutMoney(context, res.amountRub)} ₽',
                 style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontFamily: 'Gilroy',
@@ -387,13 +419,14 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
                 ),
               ),
               const SizedBox(height: 12),
-              SelfBuyoutSecondaryButton(
-                label: _downloadingQr
-                    ? tr(context, ru: 'Готовим файл…', zh: '正在准备文件…')
-                    : tr(context, ru: 'Сохранить QR-код', zh: '保存二维码'),
-                icon: Icons.save_alt_rounded,
-                onTap: _downloadingQr ? null : _downloadQr,
-              ),
+              if (res.qrPayload.isNotEmpty)
+                SelfBuyoutSecondaryButton(
+                  label: _downloadingQr
+                      ? tr(context, ru: 'Готовим файл…', zh: '正在准备文件…')
+                      : tr(context, ru: 'Сохранить QR-код', zh: '保存二维码'),
+                  icon: Icons.save_alt_rounded,
+                  onTap: _downloadingQr ? null : _downloadQr,
+                ),
             ],
           ),
         ),
@@ -407,8 +440,8 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
               Text(
                 tr(
                   context,
-                  ru: 'Оплатите по QR, приложите чек и нажмите «Я оплатил». Заявка уйдёт сотруднику на проверку.',
-                  zh: '扫码付款后上传凭证并点击「我已付款」，申请将提交审核。',
+                  ru: 'Оплатите по QR и приложите чек. После успешной отправки заявка уйдёт сотруднику на проверку.',
+                  zh: '扫码付款后附上凭证，发送成功后申请将提交审核。',
                 ),
                 style: const TextStyle(
                   color: AppColors.textSecondary,
@@ -419,17 +452,12 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
                 ),
               ),
               const SizedBox(height: 12),
-              SelfBuyoutSecondaryButton(
-                label: _fileBytes == null
-                    ? tr(
-                        context,
-                        ru: 'Приложить чек (фото/PDF)',
-                        zh: '附上凭证（图片/PDF）',
-                      )
-                    : tr(context, ru: 'Заменить чек', zh: '更换凭证'),
-                icon: Icons.attach_file_rounded,
-                onTap: _uploading ? null : _pickReceipt,
-              ),
+              if (_fileBytes != null)
+                SelfBuyoutSecondaryButton(
+                  label: tr(context, ru: 'Заменить чек', zh: '更换凭证'),
+                  icon: Icons.attach_file_rounded,
+                  onTap: _uploading ? null : _pickReceipt,
+                ),
               if (_fileBytes != null) ...[
                 const SizedBox(height: 10),
                 _receiptPreview(),
@@ -457,10 +485,14 @@ class _SelfBuyoutQrSheetState extends ConsumerState<SelfBuyoutQrSheet> {
       );
     }
     return SelfBuyoutPrimaryButton(
-      label: tr(context, ru: 'Я оплатил', zh: '我已付款'),
+      label: _fileBytes == null
+          ? tr(context, ru: 'Приложить чек', zh: '附加付款凭证')
+          : tr(context, ru: 'Повторить отправку', zh: '重新发送'),
       icon: Icons.check_circle_outline_rounded,
       isLoading: _uploading,
-      onTap: (_fileBytes != null && !_uploading) ? _confirmPaid : null,
+      onTap: _uploading
+          ? null
+          : (_fileBytes == null ? _pickReceipt : _confirmPaid),
     );
   }
 

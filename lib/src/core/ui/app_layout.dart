@@ -1,5 +1,7 @@
 import 'package:flutter/widgets.dart';
 
+import 'app_keyboard_dismiss.dart';
+
 class AppLayout {
   const AppLayout._();
 
@@ -136,7 +138,7 @@ class AppLayout {
   }
 
   static double topBarHeightFor(BuildContext context) {
-    return topBarHeight * compactScale(context);
+    return (topBarHeight * compactScale(context)).clamp(44.0, double.infinity);
   }
 
   static double topBarTopMarginFor(BuildContext context) {
@@ -163,7 +165,10 @@ class AppLayout {
   }
 
   static double bottomBarObstruction(BuildContext context) {
-    if (useSideNavigation(context)) return 0;
+    if (useSideNavigation(context) ||
+        AppKeyboardDismissRegion.isKeyboardVisibleOf(context)) {
+      return 0;
+    }
 
     return MediaQuery.viewPaddingOf(context).bottom +
         bottomBarHeightFor(context) +

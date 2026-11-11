@@ -9,15 +9,11 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/config/sentry_config.dart';
 import '../../../core/logging/client_log_service.dart';
-import '../../../core/network/api_client.dart';
-import '../../../core/network/network_diagnostics.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../../core/services/update_service.dart';
 import '../../../core/ui/app_colors.dart';
-import '../../../core/ui/app_toast.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/blurred_modal_bottom_sheet.dart';
-import '../../../core/utils/clipboard_helper.dart';
 import '../../../core/utils/locale_text.dart';
 import '../../clients/application/client_codes_controller.dart';
 import '../../garage/application/garage_providers.dart';
@@ -26,9 +22,6 @@ import '../../clients/presentation/client_switcher_sheet.dart';
 import '../../notifications/application/notifications_controller.dart';
 import '../../notifications/presentation/notifications_sheet.dart';
 import '../../partner_program/data/client_partner_program_provider.dart';
-import '../../profile/data/problem_report_repository.dart';
-import '../../profile/data/profile_provider.dart';
-import '../../profile/presentation/problem_report_sheet.dart';
 import '../../shop/data/shop_availability_provider.dart';
 
 class DesktopSideNavExpandedNotifier extends Notifier<bool> {
@@ -66,7 +59,6 @@ class DesktopSideNav extends ConsumerStatefulWidget {
 }
 
 class _DesktopSideNavState extends ConsumerState<DesktopSideNav> {
-  bool _networkDiagnosticsRunning = false;
   bool _updateCheckRunning = false;
   late final ScrollController _menuScrollController;
 
@@ -149,9 +141,6 @@ class _DesktopSideNavState extends ConsumerState<DesktopSideNav> {
     final clientCode = ref.watch(activeClientCodeProvider);
     ref.watch(notificationsControllerProvider);
     final unreadNotifications = ref.watch(unreadNotificationsCountProvider);
-    final profileAsync = ref.watch(clientProfileProvider);
-    final profile = profileAsync.asData?.value;
-    final isProfileLoading = profile == null && profileAsync.isLoading;
     final cabinetItems = <_SideNavEntry>[
       _primaryItems.first,
       _SideNavEntry(
@@ -290,21 +279,6 @@ class _DesktopSideNavState extends ConsumerState<DesktopSideNav> {
         action: _checkForUpdate,
         loading: _updateCheckRunning,
       ),
-      _SideNavEntry(
-        icon: Icons.wifi_rounded,
-        selectedIcon: Icons.wifi_rounded,
-        label: _networkDiagnosticsRunning ? 'Диагностика…' : 'Диагностика',
-        action: _runNetworkDiagnostics,
-        loading: _networkDiagnosticsRunning,
-      ),
-      _SideNavEntry(
-        icon: Icons.bug_report_outlined,
-        selectedIcon: Icons.bug_report_outlined,
-        label: 'Проблема',
-        trainingTargetId: 'menu.report',
-        action: isProfileLoading ? null : () => _openProblemReport(profile),
-        loading: isProfileLoading,
-      ),
       if (SentryConfig.verifyButtonEnabled)
         _SideNavEntry(
           icon: Icons.bug_report_rounded,
@@ -375,7 +349,7 @@ class _DesktopSideNavState extends ConsumerState<DesktopSideNav> {
                         onTap: _handleEntryTap,
                       ),
                       _SideNavSection(
-                        title: 'Диагностика',
+                        title: tr(context, ru: 'Приложение', zh: '应用'),
                         expanded: expanded,
                         entries: diagnosticItems,
                         currentPath: currentPath,
@@ -479,61 +453,6 @@ class _DesktopSideNavState extends ConsumerState<DesktopSideNav> {
     ).whenComplete(() => isSheetOpen = false);
   }
 
-  Future<void> _runNetworkDiagnostics() async {
-    if (_networkDiagnosticsRunning) return;
-
-    final messenger = ScaffoldMessenger.of(context);
-    final brandColor = context.brandPrimary;
-
-    setState(() => _networkDiagnosticsRunning = true);
-    ClientLogService.instance.action('Запуск диагностики сети');
-
-    try {
-      final report = await NetworkDiagnosticsService(
-        ref.read(apiClientProvider),
-      ).collect(clientCode: ref.read(activeClientCodeProvider));
-      final copied = await AppClipboard.copyText(report.toSupportText());
-
-      if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            copied
-                ? 'Диагностика сети скопирована. Отправьте её менеджеру.'
-                : 'Диагностика сети собрана, но не скопирована автоматически.',
-          ),
-          backgroundColor: brandColor,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      );
-    } catch (error, stackTrace) {
-      await ClientLogService.instance.captureNonFatal(
-        'Не удалось собрать диагностику сети',
-        error: error,
-        stackTrace: stackTrace,
-      );
-
-      if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: const Text('Не удалось собрать диагностику сети'),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _networkDiagnosticsRunning = false);
-      }
-    }
-  }
-
   Future<void> _checkForUpdate() async {
     if (_updateCheckRunning) return;
 
@@ -547,38 +466,6 @@ class _DesktopSideNavState extends ConsumerState<DesktopSideNav> {
         setState(() => _updateCheckRunning = false);
       }
     }
-  }
-
-  void _openProblemReport(ClientProfile? profile) {
-    if (profile == null) {
-      AppToast.showFromSnackBar(
-        context,
-        SnackBar(
-          content: const Text('Профиль ещё не загрузился. Попробуйте ещё раз.'),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      );
-      return;
-    }
-
-    final rootNavigator = Navigator.of(context, rootNavigator: true);
-    final hostContext = rootNavigator.context;
-    final repository = ref.read(problemReportRepositoryProvider);
-    final currentScreen = ClientLogService.instance.currentScreen;
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!hostContext.mounted) return;
-      showProblemReportSheet(
-        context: hostContext,
-        profile: profile,
-        repository: repository,
-        currentScreen: currentScreen,
-      );
-    });
   }
 }
 

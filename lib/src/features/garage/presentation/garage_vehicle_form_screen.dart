@@ -1,3 +1,5 @@
+import '../../../core/utils/locale_text.dart';
+import '../../../core/ui/unsaved_changes_guard.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +18,8 @@ Future<bool?> showGarageVehicleFormModal(
 }) {
   return showGarageModalSheet<bool>(
     context: context,
+    isDismissible: false,
+    enableDrag: false,
     child: GarageVehicleFormScreen(vehicleId: vehicleId, modal: true),
   );
 }
@@ -94,7 +98,10 @@ class _GarageVehicleFormScreenState
     } catch (_) {
       if (!mounted) return;
       setState(() => _loading = false);
-      _show('Не удалось загрузить автомобиль', error: true);
+      _show(
+        tr(context, ru: 'Не удалось загрузить автомобиль', zh: '无法加载车辆'),
+        error: true,
+      );
     }
   }
 
@@ -132,8 +139,8 @@ class _GarageVehicleFormScreenState
       if (!mounted) return;
       _show(
         widget.vehicleId == null
-            ? 'Автомобиль добавлен'
-            : 'Автомобиль обновлён',
+            ? tr(context, ru: 'Автомобиль добавлен', zh: '车辆已添加')
+            : tr(context, ru: 'Автомобиль обновлён', zh: '车辆已更新'),
       );
       if (widget.modal) {
         Navigator.of(context).pop(true);
@@ -143,7 +150,10 @@ class _GarageVehicleFormScreenState
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
-      _show('Не удалось сохранить автомобиль', error: true);
+      _show(
+        tr(context, ru: 'Не удалось сохранить автомобиль', zh: '无法保存车辆'),
+        error: true,
+      );
     }
   }
 
@@ -154,18 +164,22 @@ class _GarageVehicleFormScreenState
         await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
-            title: const Text('Удалить автомобиль?'),
-            content: const Text(
-              'Автомобиль будет скрыт из Гаража. История заявок сохранится.',
+            title: Text(tr(context, ru: 'Удалить автомобиль?', zh: '删除车辆？')),
+            content: Text(
+              tr(
+                context,
+                ru: 'Автомобиль будет скрыт из Гаража. История заявок сохранится.',
+                zh: '车辆将从车库中隐藏，申请记录将保留。',
+              ),
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(dialogContext, false),
-                child: const Text('Отмена'),
+                child: Text(tr(context, ru: 'Отмена', zh: '取消')),
               ),
               FilledButton(
                 onPressed: () => Navigator.pop(dialogContext, true),
-                child: const Text('Удалить'),
+                child: Text(tr(context, ru: 'Удалить', zh: '删除')),
               ),
             ],
           ),
@@ -186,7 +200,10 @@ class _GarageVehicleFormScreenState
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
-      _show('Не удалось удалить автомобиль', error: true);
+      _show(
+        tr(context, ru: 'Не удалось удалить автомобиль', zh: '无法删除车辆'),
+        error: true,
+      );
     }
   }
 
@@ -201,8 +218,8 @@ class _GarageVehicleFormScreenState
         ? MediaQuery.viewInsetsOf(context).bottom + 24
         : AppLayout.bottomScrollPadding(context);
     final title = widget.vehicleId == null
-        ? 'Добавление автомобиля'
-        : 'Редактирование автомобиля';
+        ? tr(context, ru: 'Добавление автомобиля', zh: '添加车辆')
+        : tr(context, ru: 'Редактирование автомобиля', zh: '编辑车辆');
     if (_loading) {
       return ListView(
         padding: EdgeInsets.fromLTRB(
@@ -216,7 +233,11 @@ class _GarageVehicleFormScreenState
             GarageModalHeader(
               icon: Icons.directions_car_filled_rounded,
               title: title,
-              subtitle: 'Данные автомобиля для подбора запчастей',
+              subtitle: tr(
+                context,
+                ru: 'Данные автомобиля для подбора запчастей',
+                zh: '用于匹配配件的车辆信息',
+              ),
             )
           else
             GaragePageHeader(title: title),
@@ -225,153 +246,228 @@ class _GarageVehicleFormScreenState
         ],
       );
     }
-    return Form(
-      key: _formKey,
-      child: ListView(
-        padding: EdgeInsets.fromLTRB(
-          16,
-          widget.modal ? 0 : top * 0.7 + 16,
-          16,
-          bottom + 24,
-        ),
-        children: [
-          if (widget.modal)
-            GarageModalHeader(
-              icon: Icons.directions_car_filled_rounded,
-              title: title,
-              subtitle: 'Данные автомобиля для подбора запчастей',
-            )
-          else
-            GaragePageHeader(title: title),
-          const SizedBox(height: 12),
-          GarageSectionCard(
-            icon: Icons.badge_outlined,
-            title: 'Основные данные',
-            subtitle: 'VIN и понятное название автомобиля',
-            child: Column(
-              children: [
-                TextFormField(
-                  controller: _vin,
-                  enabled: widget.vehicleId == null,
-                  textCapitalization: TextCapitalization.characters,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(
-                      RegExp(r'[A-HJ-NPR-Za-hj-npr-z0-9]'),
+    return UnsavedFormGuard(
+      controllers: [
+        _vin,
+        _nickname,
+        _make,
+        _model,
+        _year,
+        _generation,
+        _engine,
+        _comment,
+      ],
+      extraState: '',
+      isBusy: _saving,
+      child: Form(
+        key: _formKey,
+        child: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: EdgeInsets.fromLTRB(
+            16,
+            widget.modal ? 0 : top * 0.7 + 16,
+            16,
+            bottom + 24,
+          ),
+          children: [
+            if (widget.modal)
+              GarageModalHeader(
+                icon: Icons.directions_car_filled_rounded,
+                title: title,
+                subtitle: tr(
+                  context,
+                  ru: 'Данные автомобиля для подбора запчастей',
+                  zh: '用于匹配配件的车辆信息',
+                ),
+              )
+            else
+              GaragePageHeader(title: title),
+            const SizedBox(height: 12),
+            GarageSectionCard(
+              icon: Icons.badge_outlined,
+              title: tr(context, ru: 'Основные данные', zh: '基本信息'),
+              subtitle: tr(
+                context,
+                ru: 'VIN и понятное название автомобиля',
+                zh: 'VIN和车辆名称',
+              ),
+              child: Column(
+                children: [
+                  TextFormField(
+                    controller: _vin,
+                    textInputAction: TextInputAction.next,
+                    enabled: widget.vehicleId == null,
+                    textCapitalization: TextCapitalization.characters,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(
+                        RegExp(r'[A-HJ-NPR-Za-hj-npr-z0-9]'),
+                      ),
+                      LengthLimitingTextInputFormatter(17),
+                    ],
+                    decoration: InputDecoration(
+                      labelText: 'VIN',
+                      hintText: tr(context, ru: '17 символов', zh: '17个字符'),
+                      prefixIcon: Icon(Icons.pin_rounded),
                     ),
-                    LengthLimitingTextInputFormatter(17),
-                  ],
-                  decoration: const InputDecoration(
-                    labelText: 'VIN',
-                    hintText: '17 символов',
-                    prefixIcon: Icon(Icons.pin_rounded),
-                  ),
-                  validator: (value) =>
-                      RegExp(
-                        r'^[A-HJ-NPR-Z0-9]{17}$',
-                      ).hasMatch((value ?? '').trim().toUpperCase())
-                      ? null
-                      : 'Введите корректный VIN',
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _nickname,
-                  decoration: const InputDecoration(
-                    labelText: 'Название в Гараже',
-                    hintText: 'Например, Семейный автомобиль',
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          GarageSectionCard(
-            icon: Icons.directions_car_outlined,
-            title: 'Автомобиль',
-            subtitle: 'Марка, модель и год выпуска',
-            child: Column(
-              children: [
-                TextFormField(
-                  controller: _make,
-                  decoration: const InputDecoration(labelText: 'Марка *'),
-                  validator: _required,
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _model,
-                  decoration: const InputDecoration(labelText: 'Модель *'),
-                  validator: _required,
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _year,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  decoration: const InputDecoration(labelText: 'Год выпуска *'),
-                  validator: (value) {
-                    final year = int.tryParse(value ?? '');
-                    final max = DateTime.now().year + 2;
-                    return year != null && year >= 1886 && year <= max
+                    validator: (value) =>
+                        RegExp(
+                          r'^[A-HJ-NPR-Z0-9]{17}$',
+                        ).hasMatch((value ?? '').trim().toUpperCase())
                         ? null
-                        : 'Введите год от 1886 до $max';
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          GarageSectionCard(
-            icon: Icons.tune_rounded,
-            title: 'Дополнительно',
-            subtitle: 'Комплектация и уточнения для менеджера',
-            child: Column(
-              children: [
-                TextFormField(
-                  controller: _generation,
-                  decoration: const InputDecoration(
-                    labelText: 'Поколение / комплектация',
+                        : tr(
+                            context,
+                            ru: 'Введите корректный VIN',
+                            zh: '请输入有效的VIN',
+                          ),
                   ),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _engine,
-                  decoration: const InputDecoration(labelText: 'Код двигателя'),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _comment,
-                  minLines: 2,
-                  maxLines: 5,
-                  decoration: const InputDecoration(labelText: 'Комментарий'),
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _nickname,
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: tr(
+                        context,
+                        ru: 'Название в Гараже',
+                        zh: '车库中的名称',
+                      ),
+                      hintText: tr(
+                        context,
+                        ru: 'Например, Семейный автомобиль',
+                        zh: '例如：家庭用车',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 14),
-          GaragePrimaryButton(
-            label: widget.vehicleId == null
-                ? 'Добавить автомобиль'
-                : 'Сохранить',
-            icon: Icons.save_rounded,
-            onPressed: _save,
-            loading: _saving,
-          ),
-          if (widget.vehicleId != null) ...[
-            const SizedBox(height: 10),
-            GarageSecondaryButton(
-              label: _vehicle?.activeRequestCount == 0
-                  ? 'Удалить автомобиль'
-                  : 'Нельзя удалить: есть активные заявки',
-              icon: Icons.delete_outline_rounded,
-              color: Colors.redAccent,
-              onPressed: _vehicle?.activeRequestCount == 0 ? _delete : null,
+            const SizedBox(height: 12),
+            GarageSectionCard(
+              icon: Icons.directions_car_outlined,
+              title: tr(context, ru: 'Автомобиль', zh: '车辆'),
+              subtitle: tr(
+                context,
+                ru: 'Марка, модель и год выпуска',
+                zh: '品牌、型号和生产年份',
+              ),
+              child: Column(
+                children: [
+                  TextFormField(
+                    controller: _make,
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: tr(context, ru: 'Марка *', zh: '品牌 *'),
+                    ),
+                    validator: (value) => _required(context, value),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _model,
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: tr(context, ru: 'Модель *', zh: '型号 *'),
+                    ),
+                    validator: (value) => _required(context, value),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _year,
+                    textInputAction: TextInputAction.next,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: InputDecoration(
+                      labelText: tr(context, ru: 'Год выпуска *', zh: '生产年份 *'),
+                    ),
+                    validator: (value) {
+                      final year = int.tryParse(value ?? '');
+                      final max = DateTime.now().year + 2;
+                      return year != null && year >= 1886 && year <= max
+                          ? null
+                          : tr(
+                              context,
+                              ru: 'Введите год от 1886 до $max',
+                              zh: '请输入1886至$max之间的年份',
+                            );
+                    },
+                  ),
+                ],
+              ),
             ),
+            const SizedBox(height: 12),
+            GarageSectionCard(
+              icon: Icons.tune_rounded,
+              title: tr(context, ru: 'Дополнительно', zh: '其他信息'),
+              subtitle: tr(
+                context,
+                ru: 'Комплектация и уточнения для менеджера',
+                zh: '提供给经理的配置和说明',
+              ),
+              child: Column(
+                children: [
+                  TextFormField(
+                    controller: _generation,
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: tr(
+                        context,
+                        ru: 'Поколение / комплектация',
+                        zh: '代次 / 配置',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _engine,
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: tr(context, ru: 'Код двигателя', zh: '发动机代码'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _comment,
+                    textInputAction: TextInputAction.newline,
+                    minLines: 2,
+                    maxLines: 5,
+                    decoration: InputDecoration(
+                      labelText: tr(context, ru: 'Комментарий', zh: '备注'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            GaragePrimaryButton(
+              label: widget.vehicleId == null
+                  ? tr(context, ru: 'Добавить автомобиль', zh: '添加车辆')
+                  : tr(context, ru: 'Сохранить', zh: '保存'),
+              icon: Icons.save_rounded,
+              onPressed: _save,
+              loading: _saving,
+            ),
+            if (widget.vehicleId != null) ...[
+              const SizedBox(height: 10),
+              GarageSecondaryButton(
+                label: _vehicle?.activeRequestCount == 0
+                    ? tr(context, ru: 'Удалить автомобиль', zh: '删除车辆')
+                    : tr(
+                        context,
+                        ru: 'Нельзя удалить: есть активные заявки',
+                        zh: '存在进行中的申请，暂不能删除',
+                      ),
+                icon: Icons.delete_outline_rounded,
+                color: Colors.redAccent,
+                onPressed: _vehicle?.activeRequestCount == 0 ? _delete : null,
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
 }
 
-String? _required(String? value) {
-  return value?.trim().isNotEmpty == true ? null : 'Обязательное поле';
+String? _required(BuildContext context, String? value) {
+  return value?.trim().isNotEmpty == true
+      ? null
+      : tr(context, ru: 'Обязательное поле', zh: '必填项');
 }

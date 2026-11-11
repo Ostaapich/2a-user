@@ -7,12 +7,16 @@ import '../../../core/ui/sheet_handle.dart';
 Future<T?> showGarageModalSheet<T>({
   required BuildContext context,
   required Widget child,
+  bool isDismissible = true,
+  bool enableDrag = true,
 }) {
   final media = MediaQuery.sizeOf(context);
   final useSideSheet = AppLayout.useSideNavigation(context);
   return showBlurredModalBottomSheet<T>(
     context: context,
     useRootNavigator: true,
+    isDismissible: isDismissible,
+    enableDrag: enableDrag,
     isScrollControlled: true,
     useSafeArea: true,
     backgroundColor: Colors.transparent,

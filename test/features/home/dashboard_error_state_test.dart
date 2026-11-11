@@ -57,6 +57,7 @@ void main() {
             if (++trackCalls == 1) throw StateError('offline');
             return 7;
           }),
+          homePendingTracksCountProvider('TEST').overrideWith((ref) async => 0),
           homeAssembliesCountProvider('TEST').overrideWith((ref) async {
             assemblyCalls++;
             return 37;
@@ -109,6 +110,7 @@ void main() {
       final providers = [
         tracksDigestProvider('TEST'),
         homeTracksCountProvider('TEST'),
+        homePendingTracksCountProvider('TEST'),
         tracksWeeklyCountProvider('TEST'),
         assembliesDigestProvider('TEST'),
         homeAssembliesCountProvider('TEST'),

@@ -1,3 +1,4 @@
+import '../../../core/services/analytics_service.dart';
 import 'dart:convert';
 import 'package:uuid/uuid.dart';
 import 'package:dio/dio.dart';
@@ -325,73 +326,82 @@ class AssembliesApiService {
     double? insuranceAmount,
     String? goodsDescription,
     List<int>? trackIds,
+    bool cancelPendingQuestions = false,
   }) async {
-    try {
-      final payload = <String, dynamic>{
-        'clientId': clientId,
-        if (clientCodeId != null)
-          'clientCodeId': clientCodeId
-        else if (clientCode != null)
-          'clientCode': clientCode,
-        if (name != null) 'name': name,
-        if (tariffId != null) 'tariffId': tariffId,
-        if (packagingTypeIds != null && packagingTypeIds.isNotEmpty)
-          'packagingTypeIds': packagingTypeIds,
-        'hasFragileGoods': hasFragileGoods,
-        'placePreference': placePreference,
-        'packagingRemoval': 'none',
-        if (supportsPackagingRemovalTargets) 'packagingRemovalTarget': null,
-        'hasInsurance': hasInsurance,
-        if (insuranceAmount != null) 'insuranceAmount': insuranceAmount,
-        if (goodsDescription != null && goodsDescription.trim().isNotEmpty)
-          'goodsDescription': goodsDescription.trim(),
-        if (trackIds != null && trackIds.isNotEmpty) 'trackIds': trackIds,
-      };
-      // Selection order can change after refreshing the list; it does not
-      // change the batch and must retain the same retry key.
-      final fingerprint = jsonEncode({
-        ...payload,
-        if (trackIds != null && trackIds.isNotEmpty)
-          'trackIds': [...trackIds]..sort(),
-        if (packagingTypeIds != null && packagingTypeIds.isNotEmpty)
-          'packagingTypeIds': [...packagingTypeIds]..sort(),
-      });
-      final requestKey = _pendingAssemblyRequests.putIfAbsent(
-        fingerprint,
-        () => const Uuid().v4(),
-      );
-      final response = await _apiClient.post(
-        '/assemblies',
-        data: {
-          ...payload,
-          'assemblyBatchProtocol': 1,
-          'assemblyRequestId': requestKey,
-        },
-      );
+    return AnalyticsService.traceOperation(
+      WorkflowAction.assemblyCreate,
+      () async {
+        try {
+          final payload = <String, dynamic>{
+            'clientId': clientId,
+            if (clientCodeId != null)
+              'clientCodeId': clientCodeId
+            else if (clientCode != null)
+              'clientCode': clientCode,
+            if (name != null) 'name': name,
+            if (tariffId != null) 'tariffId': tariffId,
+            if (packagingTypeIds != null && packagingTypeIds.isNotEmpty)
+              'packagingTypeIds': packagingTypeIds,
+            'hasFragileGoods': hasFragileGoods,
+            'placePreference': placePreference,
+            'packagingRemoval': 'none',
+            if (supportsPackagingRemovalTargets) 'packagingRemovalTarget': null,
+            'hasInsurance': hasInsurance,
+            if (insuranceAmount != null) 'insuranceAmount': insuranceAmount,
+            if (goodsDescription != null && goodsDescription.trim().isNotEmpty)
+              'goodsDescription': goodsDescription.trim(),
+            if (trackIds != null && trackIds.isNotEmpty) 'trackIds': trackIds,
+            if (cancelPendingQuestions) 'cancelPendingQuestions': true,
+          };
+          // Selection order can change after refreshing the list; it does not
+          // change the batch and must retain the same retry key.
+          final fingerprint = jsonEncode({
+            ...payload,
+            if (trackIds != null && trackIds.isNotEmpty)
+              'trackIds': [...trackIds]..sort(),
+            if (packagingTypeIds != null && packagingTypeIds.isNotEmpty)
+              'packagingTypeIds': [...packagingTypeIds]..sort(),
+          });
+          final requestKey = _pendingAssemblyRequests.putIfAbsent(
+            fingerprint,
+            () => const Uuid().v4(),
+          );
+          final response = await _apiClient.post(
+            '/assemblies',
+            data: {
+              ...payload,
+              'assemblyBatchProtocol': 1,
+              'assemblyRequestId': requestKey,
+            },
+          );
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        final data = response.data as Map<String, dynamic>;
-        final children = data['assemblies'] is List
-            ? (data['assemblies'] as List)
-                  .map(
-                    (item) => Assembly.fromJson(
-                      Map<String, dynamic>.from(item as Map),
-                    ),
-                  )
-                  .toList()
-            : [Assembly.fromJson(data)];
-        if (children.isEmpty) return AssemblyCreateResult.failure();
-        _pendingAssemblyRequests.remove(fingerprint);
-        return AssemblyCreateResult.success(
-          children.first,
-          assemblies: children,
-        );
-      }
-      return AssemblyCreateResult.failure();
-    } on DioException catch (e) {
-      debugPrint('Error creating assembly: $e');
-      return AssemblyCreateResult.fromErrorData(e.response?.data);
-    }
+          if (response.statusCode == 200 || response.statusCode == 201) {
+            final data = response.data as Map<String, dynamic>;
+            final children = data['assemblies'] is List
+                ? (data['assemblies'] as List)
+                      .map(
+                        (item) => Assembly.fromJson(
+                          Map<String, dynamic>.from(item as Map),
+                        ),
+                      )
+                      .toList()
+                : [Assembly.fromJson(data)];
+            if (children.isEmpty) return AssemblyCreateResult.failure();
+            _pendingAssemblyRequests.remove(fingerprint);
+            return AssemblyCreateResult.success(
+              children.first,
+              assemblies: children,
+            );
+          }
+          return AssemblyCreateResult.failure();
+        } on DioException catch (e) {
+          debugPrint('Error creating assembly: $e');
+          return AssemblyCreateResult.fromErrorData(e.response?.data);
+        }
+      },
+      outcome: (result) =>
+          result.isSuccess ? WorkflowStage.succeeded : WorkflowStage.failed,
+    );
   }
 
   /// Добавить треки в сборку
@@ -521,6 +531,7 @@ class PackagingType {
   final int id;
   final String name;
   final String? nameRu;
+  final String? nameZh;
   final String kind;
   final bool suitableForFragileGoods;
   final String unitLabel;
@@ -531,6 +542,7 @@ class PackagingType {
     required this.id,
     required this.name,
     this.nameRu,
+    this.nameZh,
     this.kind = 'primary',
     this.suitableForFragileGoods = false,
     this.unitLabel = 'шт.',
@@ -543,6 +555,7 @@ class PackagingType {
       id: int.tryParse(json['id'].toString()) ?? 0,
       name: json['name'] as String? ?? json['nameRu'] as String? ?? '',
       nameRu: json['nameRu'] as String?,
+      nameZh: json['nameZh'] as String?,
       kind: json['kind'] as String? ?? 'primary',
       suitableForFragileGoods:
           json['suitableForFragileGoods'] as bool? ?? false,
@@ -559,6 +572,8 @@ class PackagingType {
   bool get isPrimary => kind != 'addon';
   bool get isAddon => kind == 'addon';
   String get displayName => nameRu ?? name;
+  String localizedName(bool chinese) =>
+      chinese && nameZh?.trim().isNotEmpty == true ? nameZh! : displayName;
 }
 
 /// Провайдер для тарифов (с поддержкой clientId)
@@ -586,7 +601,7 @@ final tariffsProvider = FutureProvider<List<Tariff>>((ref) async {
     return [];
   } on DioException catch (e) {
     debugPrint('Error loading tariffs: $e');
-    return [];
+    rethrow;
   }
 });
 
@@ -611,7 +626,7 @@ final packagingTypesProvider = FutureProvider<List<PackagingType>>((ref) async {
     return [];
   } on DioException catch (e) {
     debugPrint('Error loading packaging types: $e');
-    return [];
+    rethrow;
   }
 });
 
@@ -628,6 +643,7 @@ DateTime? _parseDate(dynamic value) {
 class Tariff {
   final int id;
   final String name;
+  final String? nameZh;
   final double baseCost;
   final double? packagingRemovalTransportPrice;
   final double? packagingRemovalAllPrice;
@@ -642,6 +658,7 @@ class Tariff {
   const Tariff({
     required this.id,
     required this.name,
+    this.nameZh,
     required this.baseCost,
     this.packagingRemovalTransportPrice,
     this.packagingRemovalAllPrice,
@@ -654,10 +671,14 @@ class Tariff {
     this.requiresCompleteProductInfo = false,
   });
 
+  String localizedName(bool chinese) =>
+      chinese && nameZh?.trim().isNotEmpty == true ? nameZh! : name;
+
   factory Tariff.fromJson(Map<String, dynamic> json) {
     return Tariff(
       id: int.tryParse(json['id'].toString()) ?? 0,
       name: json['name'] as String? ?? '',
+      nameZh: json['nameZh'] as String?,
       baseCost: json['baseCost'] != null
           ? double.tryParse(json['baseCost'].toString()) ?? 0
           : 0,

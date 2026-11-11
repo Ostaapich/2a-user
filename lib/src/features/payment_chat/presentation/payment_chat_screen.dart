@@ -4,6 +4,7 @@ import '../../training/presentation/training_target.dart';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../../support/presentation/chat_draft_send.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,7 +18,9 @@ import '../../../core/ui/tutorial_card.dart';
 import '../../../core/ui/app_background.dart';
 import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/app_input_decoration.dart';
+import '../../../core/ui/app_search_field.dart';
 import '../../../core/ui/app_layout.dart';
+import '../../../core/ui/app_keyboard_dismiss.dart';
 import '../../../core/ui/fullscreen_image_overlay.dart';
 import '../../../core/ui/pdf_preview_overlay.dart';
 import '../../../core/services/push_notification_service.dart';
@@ -188,7 +191,6 @@ class _PaymentChatScreenState extends ConsumerState<PaymentChatScreen>
     });
 
     // Очищаем уведомления при открытии чата
-    _clearNotifications();
   }
 
   bool get _canUseRef => mounted && !_isDisposed;
@@ -206,10 +208,6 @@ class _PaymentChatScreenState extends ConsumerState<PaymentChatScreen>
 
   Future<void> _initNotifications() async {
     await _notificationService.initialize();
-  }
-
-  Future<void> _clearNotifications() async {
-    await _notificationService.cancelAllNotifications();
   }
 
   @override
@@ -234,7 +232,6 @@ class _PaymentChatScreenState extends ConsumerState<PaymentChatScreen>
     debugPrint('App lifecycle state changed to: $state');
 
     if (state == AppLifecycleState.resumed) {
-      _clearNotifications();
       // Обновляем сообщения при возврате в приложение
       _paymentChatController.pollNewMessages();
       // Уведомляем сервер что чат снова открыт
@@ -264,21 +261,23 @@ class _PaymentChatScreenState extends ConsumerState<PaymentChatScreen>
     _isSendingLocally = true;
     try {
       HapticFeedback.lightImpact();
-      _textController.selection = const TextSelection.collapsed(offset: 0);
-      _textController.clear();
-
       // Собираем ID вложений
       final attachmentIds = pendingAttachments
           .map((a) => a['id'] as int)
           .toList();
 
-      final success = await ref
-          .read(paymentChatControllerProvider.notifier)
-          .sendMessage(
-            text.isEmpty ? tr(context, ru: 'Файл', zh: '文件') : text,
-            metadata: metadata,
-            attachmentIds: attachmentIds,
-          );
+      final success = await sendChatDraft(
+        controller: _textController,
+        text: text,
+        isMounted: () => mounted && _canUseRef,
+        send: () => ref
+            .read(paymentChatControllerProvider.notifier)
+            .sendMessage(
+              text.isEmpty ? tr(context, ru: 'Файл', zh: '文件') : text,
+              metadata: metadata,
+              attachmentIds: attachmentIds,
+            ),
+      );
 
       if (success && _canUseRef) {
         // Очищаем pending attachments
@@ -719,7 +718,8 @@ class _PaymentChatScreenState extends ConsumerState<PaymentChatScreen>
       }
     });
     final bottomSafeInset = MediaQuery.viewPaddingOf(context).bottom;
-    final composerBottomInset = keyboardInset > 0
+    final composerBottomInset =
+        AppKeyboardDismissRegion.isKeyboardVisibleOf(context)
         ? keyboardInset + 10
         : bottomSafeInset + 12;
 
@@ -1615,56 +1615,59 @@ class _PaymentChatScreenState extends ConsumerState<PaymentChatScreen>
 
   Widget _buildEmptyState() {
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [context.brandPrimary, context.brandSecondary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
+      child: SingleChildScrollView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [context.brandPrimary, context.brandSecondary],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(24),
               ),
-              borderRadius: BorderRadius.circular(24),
-            ),
-            child: const Icon(
-              Icons.account_balance_wallet_rounded,
-              color: Colors.white,
-              size: 40,
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            tr(context, ru: 'Чат по оплате', zh: '付款聊天'),
-            style: const TextStyle(
-              fontFamily: 'Gilroy',
-              fontSize: 20,
-              fontWeight: FontWeight.w900,
-              color: AppColors.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 48),
-            child: Text(
-              tr(
-                context,
-                ru: 'Напишите нам по любым вопросам оплаты счетов и доставки',
-                zh: '如有任何发票支付和配送问题，请联系我们',
+              child: const Icon(
+                Icons.account_balance_wallet_rounded,
+                color: Colors.white,
+                size: 40,
               ),
-              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            Text(
+              tr(context, ru: 'Чат по оплате', zh: '付款聊天'),
               style: const TextStyle(
                 fontFamily: 'Gilroy',
-                fontSize: 14,
-                height: 1.25,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textSecondary,
+                fontSize: 20,
+                fontWeight: FontWeight.w900,
+                color: AppColors.textPrimary,
               ),
             ),
-          ),
-        ],
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 48),
+              child: Text(
+                tr(
+                  context,
+                  ru: 'Напишите нам по любым вопросам оплаты счетов и доставки',
+                  zh: '如有任何发票支付和配送问题，请联系我们',
+                ),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: 'Gilroy',
+                  fontSize: 14,
+                  height: 1.25,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2432,30 +2435,10 @@ class _QuickSendSheetState extends ConsumerState<_QuickSendSheet>
           // Search
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8F8F8),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: TextField(
-                controller: _searchController,
-                onChanged: (value) => setState(() => _searchQuery = value),
-                decoration: InputDecoration(
-                  hintText: tr(
-                    context,
-                    ru: 'Поиск по номеру...',
-                    zh: '按编号搜索...',
-                  ),
-                  hintStyle: TextStyle(color: Colors.grey[500]),
-                  prefixIcon: const Icon(
-                    Icons.search_rounded,
-                    color: Colors.grey,
-                    size: 26,
-                  ),
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-              ),
+            child: AppSearchField(
+              controller: _searchController,
+              onChanged: (value) => setState(() => _searchQuery = value),
+              hintText: tr(context, ru: 'Поиск по номеру...', zh: '按编号搜索...'),
             ),
           ),
 

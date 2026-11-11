@@ -1,5 +1,8 @@
 import 'package:twoalogisticcabineuser/src/core/branding/company_branding_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_keyboard_dismiss.dart';
+import '../keyboard/keyboard_form_probe.dart';
+import '../../helpers/keyboard_acceptance.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -175,6 +178,7 @@ Future<_FakeRepository> _pump(
   required Widget child,
   required Size size,
   required Locale locale,
+  TargetPlatform platform = TargetPlatform.android,
 }) async {
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.binding.setSurfaceSize(size);
@@ -186,6 +190,8 @@ Future<_FakeRepository> _pump(
         spOrganizerRepositoryProvider.overrideWithValue(repository),
       ],
       child: MaterialApp(
+        theme: ThemeData(platform: platform),
+        builder: (_, child) => AppKeyboardDismissRegion(child: child!),
         locale: locale,
         localizationsDelegates: const [
           GlobalMaterialLocalizations.delegate,
@@ -203,6 +209,23 @@ Future<_FakeRepository> _pump(
 }
 
 void main() {
+  setUpAll(loadKeyboardAcceptanceFonts);
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets('$platform _pump toolbar every field320height', (tester) async {
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetViewInsets);
+      await _pump(
+        tester,
+        child: const SpOrganizerCustomersScreen(),
+        size: const Size(390, 640),
+        locale: const Locale('ru'),
+        platform: platform,
+      );
+      expect(await probeCurrentFormEditors(tester), 1);
+    });
+  }
+
   testWidgets('embedded customer tab omits the duplicate hero', (tester) async {
     await _pump(
       tester,

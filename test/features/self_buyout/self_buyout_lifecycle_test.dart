@@ -58,36 +58,42 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('awaiting payment request can be cancelled and leaves the list', (
-    tester,
-  ) async {
-    final service = _LifecycleSelfBuyoutService();
+  testWidgets(
+    'cancelled request stays in history and confirmation states this',
+    (tester) async {
+      final service = _LifecycleSelfBuyoutService();
 
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          selfBuyoutServiceProvider.overrideWithValue(service),
-          paymentOperatorStatusProvider.overrideWith(
-            (ref) => Stream.value(PaymentOperatorStatus.workingFallback),
-          ),
-        ],
-        child: const MaterialApp(home: Scaffold(body: SelfBuyoutScreen())),
-      ),
-    );
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            selfBuyoutServiceProvider.overrideWithValue(service),
+            paymentOperatorStatusProvider.overrideWith(
+              (ref) => Stream.value(PaymentOperatorStatus.workingFallback),
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: SelfBuyoutScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text(_request.requestNumber).first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Отменить заявку'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Отменить'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text(_request.requestNumber).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Отменить заявку'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('останется в истории'), findsOneWidget);
+      expect(find.text('Оставить заявку'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Отменить заявку'));
+      await tester.pumpAndSettle();
 
-    expect(service.cancelCalls, 1);
-    expect(find.text(_request.requestNumber), findsNothing);
-    expect(tester.takeException(), isNull);
-    await tester.pump(const Duration(seconds: 4));
-  });
+      expect(service.cancelCalls, 1);
+      expect(find.text('История'), findsNothing);
+      await tester.tap(find.text('Все'));
+      await tester.pumpAndSettle();
+      expect(find.text(_request.requestNumber), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 4));
+    },
+  );
 
   testWidgets('first exchange shows Alipay QR instruction before create form', (
     tester,
@@ -155,8 +161,20 @@ class _LifecycleSelfBuyoutService extends SelfBuyoutService {
       SelfBuyoutAvailability.unavailable;
 
   @override
-  Future<List<SelfBuyoutRequest>> getRequests() async =>
-      cancelled ? const [] : const [_request];
+  Future<List<SelfBuyoutRequest>> getRequests() async => cancelled
+      ? [
+          SelfBuyoutRequest.fromJson({
+            'id': _request.id,
+            'requestNumber': _request.requestNumber,
+            'status': 'cancelled',
+            'clientCodeId': 20,
+            'requestedCnyAmount': 100,
+            'paymentRubAmount': 1200,
+            'clientCnyRubRate': 12,
+            'amountEnteredIn': 'cny',
+          }),
+        ]
+      : const [_request];
 
   @override
   Future<SelfBuyoutDetail> getDetail(int requestId) async =>

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../helpers/keyboard_acceptance.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_keyboard_dismiss.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -74,7 +76,11 @@ class _FakeRepository extends SpOrganizerRepository {
   }
 }
 
-Future<void> _pumpSheet(WidgetTester tester, {required Size size}) async {
+Future<void> _pumpSheet(
+  WidgetTester tester, {
+  required Size size,
+  TargetPlatform platform = TargetPlatform.android,
+}) async {
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.binding.setSurfaceSize(size);
   final repository = _FakeRepository();
@@ -85,6 +91,8 @@ Future<void> _pumpSheet(WidgetTester tester, {required Size size}) async {
         spV2CustomersProvider.overrideWith((ref) async => const [_customer]),
       ],
       child: MaterialApp(
+        theme: ThemeData(platform: platform),
+        builder: (context, child) => AppKeyboardDismissRegion(child: child!),
         locale: const Locale('ru'),
         localizationsDelegates: const [
           GlobalMaterialLocalizations.delegate,
@@ -114,6 +122,55 @@ Future<void> _pumpSheet(WidgetTester tester, {required Size size}) async {
 }
 
 void main() {
+  setUpAll(loadKeyboardAcceptanceFonts);
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets(
+      '$platform import search stays above keyboard without double inset',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetViewInsets);
+        await _pumpSheet(
+          tester,
+          size: const Size(390, 700),
+          platform: platform,
+        );
+        final search = find.byType(TextField).first;
+        await tester.ensureVisible(search);
+        await tester.tap(search);
+        await tester.pump();
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(MediaQuery.viewInsetsOf(tester.element(search)).bottom, 0);
+        expectFocusedCaretAboveIme(
+          tester,
+          find.byType(EditableText).first,
+          keyboardTop:
+              tester.view.physicalSize.height / tester.view.devicePixelRatio -
+              tester.view.viewInsets.bottom / tester.view.devicePixelRatio,
+        );
+        await tester.ensureVisible(search);
+        await tester.pumpAndSettle();
+        expect(tester.getBottomLeft(search).dy, lessThanOrEqualTo(400));
+        await tester.tap(
+          find.text('Импорт из бланка выкупа').first,
+          warnIfMissed: false,
+        );
+        await tester.pump();
+        expect(
+          tester
+              .widget<EditableText>(find.byType(EditableText).first)
+              .focusNode
+              .hasFocus,
+          isFalse,
+        );
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpAndSettle();
+      },
+    );
+  }
+
   test('candidate page parses pagination, money and retry state', () {
     final page = SpOrganizerPurchaseBlankCandidatePage.fromJson({
       'candidates': [

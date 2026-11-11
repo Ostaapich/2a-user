@@ -88,6 +88,16 @@ class _SpAssemblyDetailScreenState
   final ScrollController _scrollController = ScrollController();
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(spAssembliesControllerProvider.notifier).loadAssemblies();
+      }
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final state = ref.watch(spAssembliesControllerProvider);
     final topPad = AppLayout.topBarTotalHeight(context);
@@ -97,43 +107,77 @@ class _SpAssemblyDetailScreenState
       (a) => a.id == widget.assemblyId,
     );
     if (assembly == null) {
-      return ListView(
-        padding: EdgeInsets.fromLTRB(16, topPad * 0.7 + 16, 16, bottomPad),
+      if (state.isLoading) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      return Column(
         children: [
-          const SpPageHeader(title: 'Сборка не найдена'),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: SpFinanceUi.cardDecoration(),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                topPad * 0.7 + 16,
+                16,
+                bottomPad,
+              ),
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: context.brandPrimary.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Icon(
-                    Icons.info_outline_rounded,
-                    color: context.brandPrimary,
+                SpPageHeader(
+                  title: tr(
+                    context,
+                    ru: state.error == null
+                        ? 'Сборка не найдена'
+                        : 'Не удалось загрузить сборку',
+                    zh: state.error == null ? '未找到集运' : '无法加载集运',
                   ),
                 ),
-                const SizedBox(width: 12),
-                const Expanded(
-                  child: Text(
-                    'Сборка больше не найдена. Обновите список СП и попробуйте открыть её снова.',
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontFamily: 'Gilroy',
-                      fontSize: 13,
-                      height: 1.24,
-                      fontWeight: FontWeight.w700,
-                    ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: SpFinanceUi.cardDecoration(),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: context.brandPrimary.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Icon(
+                          Icons.info_outline_rounded,
+                          color: context.brandPrimary,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Сборка больше не найдена. Обновите список СП и попробуйте открыть её снова.',
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontFamily: 'Gilroy',
+                            fontSize: 13,
+                            height: 1.24,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: OutlinedButton.icon(
+              onPressed: () => ref
+                  .read(spAssembliesControllerProvider.notifier)
+                  .loadAssemblies(),
+              icon: const Icon(Icons.refresh_rounded),
+              label: Text(
+                tr(context, ru: 'Обновить данные сборки', zh: '刷新集运数据'),
+              ),
             ),
           ),
         ],

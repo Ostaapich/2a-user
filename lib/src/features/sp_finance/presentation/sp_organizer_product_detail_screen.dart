@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -554,18 +555,14 @@ class _HistoryToolbar extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          TextField(
+          AppSearchField(
             controller: controller,
             onChanged: onSearchChanged,
             textInputAction: TextInputAction.search,
-            decoration: SpFinanceUi.inputDecoration(
+            hintText: tr(
               context,
-              hintText: tr(
-                context,
-                ru: 'Закупка, клиент или название позиции',
-                zh: '采购、客户或商品名称',
-              ),
-              prefixIcon: Icons.search_rounded,
+              ru: 'Закупка, клиент или название позиции',
+              zh: '采购、客户或商品名称',
             ),
           ),
           const SizedBox(height: 10),

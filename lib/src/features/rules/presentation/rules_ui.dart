@@ -121,7 +121,7 @@ class RulesHeroCard extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
-  final int titleMaxLines;
+  final int? titleMaxLines;
 
   const RulesHeroCard({
     super.key,
@@ -133,6 +133,9 @@ class RulesHeroCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final showIcon =
+        titleMaxLines != null &&
+        MediaQuery.textScalerOf(context).scale(1) <= 1.3;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -156,19 +159,20 @@ class RulesHeroCard extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  Container(
-                    width: 58,
-                    height: 58,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.22),
+                  if (showIcon)
+                    Container(
+                      width: 58,
+                      height: 58,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.22),
+                        ),
                       ),
+                      child: Icon(icon, color: Colors.white, size: 30),
                     ),
-                    child: Icon(icon, color: Colors.white, size: 30),
-                  ),
-                  const SizedBox(width: 14),
+                  if (showIcon) const SizedBox(width: 14),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -176,7 +180,9 @@ class RulesHeroCard extends StatelessWidget {
                         Text(
                           title,
                           maxLines: titleMaxLines,
-                          overflow: TextOverflow.ellipsis,
+                          overflow: titleMaxLines == null
+                              ? TextOverflow.visible
+                              : TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: Colors.white,
                             fontFamily: 'Gilroy',

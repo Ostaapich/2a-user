@@ -9,6 +9,9 @@ import '../core/logging/client_log_service.dart';
 import '../core/ui/app_layout.dart';
 import '../core/utils/locale_text.dart';
 import '../features/auth/data/auth_provider.dart';
+import '../features/auth/data/auth_input_safety.dart';
+import '../features/auth/data/auth_form_exit_guards.dart';
+import '../features/auth/data/registration_draft.dart';
 import '../features/auth/data/partner_link_provider.dart';
 import '../features/auth/presentation/client_partner_invite_screen.dart';
 import '../features/auth/presentation/forgot_password_screen.dart';
@@ -59,6 +62,7 @@ import '../features/self_buyout/presentation/self_buyout_screen.dart';
 import '../features/support/presentation/support_chat_screen.dart';
 import '../features/tracks/presentation/tracks_screen.dart';
 import '../features/training/presentation/training_entry_screen.dart';
+import '../features/training/presentation/training_modal_ownership.dart';
 import '../features/training/presentation/assembly_practice_screen.dart';
 import '../features/training/presentation/training_target.dart';
 import 'widgets/app_scaffold.dart';
@@ -71,6 +75,7 @@ int? _parsePositiveRouteId(String? value) {
 }
 
 final routerProvider = Provider<GoRouter>((ref) {
+  final pendingDestination = PendingAuthDestination();
   // НЕ используем ref.watch здесь — иначе GoRouter пересоздаётся при каждом
   // изменении authState (включая фоновое обновление clientData), что сбрасывает
   // navigation stack в initialLocation '/'. Вместо этого читаем authState прямо
@@ -78,12 +83,19 @@ final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
     initialLocation: '/',
-    observers: [SentryNavigatorObserver(), ClientLogNavigatorObserver()],
+    observers: [
+      SentryNavigatorObserver(),
+      ClientLogNavigatorObserver(),
+      ref.read(trainingModalOwnershipProvider),
+    ],
     refreshListenable: _AuthRefreshNotifier(ref),
     redirect: (context, state) {
       final authState = ref.read(authProvider);
       final isLoading = authState.isLoading;
       final isLoggedIn = authState.isLoggedIn;
+      final registrationDraft = ref.read(registrationDraftStoreProvider);
+      registrationDraft.authenticated = isLoggedIn;
+      if (isLoggedIn) registrationDraft.clear();
       final isSplashRoute = state.matchedLocation == '/splash';
       final isPartnerLinkRoute = state.matchedLocation.startsWith(
         '/partner-connect/',
@@ -118,6 +130,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       // Иначе нажатие "Войти" перебрасывает на сплэш на время API-запроса.
       if (isLoading) {
         if (isAuthRoute || isClientPartnerInviteRoute) return null;
+        if (!isPartnerLinkRoute) pendingDestination.remember(state.uri);
         return isSplashRoute ? null : '/splash';
       }
 
@@ -126,11 +139,12 @@ final routerProvider = Provider<GoRouter>((ref) {
         if (!isLoggedIn) return '/login';
         return pendingPartnerToken != null
             ? '/partner-connect/$pendingPartnerToken'
-            : '/';
+            : pendingDestination.take() ?? '/';
       }
 
       // Not logged in and not on auth route - redirect to login
       if (!isLoggedIn && !isAuthRoute && !isClientPartnerInviteRoute) {
+        if (!isPartnerLinkRoute) pendingDestination.remember(state.uri);
         return '/login';
       }
 
@@ -138,7 +152,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       if (isLoggedIn && isAuthRoute) {
         return pendingPartnerToken != null
             ? '/partner-connect/$pendingPartnerToken'
-            : '/';
+            : pendingDestination.take() ?? '/';
       }
 
       // Токен мог быть восстановлен после cold start уже на домашнем роуте.
@@ -172,6 +186,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         name: 'register',
         path: '/register',
+        onExit: (context, state) async =>
+            ref.read(authProvider).isLoggedIn ||
+            await (ref.read(authFormExitGuardsProvider).registration?.call() ??
+                Future.value(true)),
         builder: (context, state) => const RegisterScreen(),
       ),
       GoRoute(
@@ -197,10 +215,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       StatefulShellRoute.indexedStack(
         // Auth can round-trip through splash before an outgoing transition
         // finishes. Never keep two pages with the same navigation shell key.
-        pageBuilder: (context, state, navigationShell) => NoTransitionPage<void>(
-          key: state.pageKey,
-          child: AppShell(navigationShell: navigationShell),
-        ),
+        pageBuilder: (context, state, navigationShell) =>
+            NoTransitionPage<void>(
+              key: state.pageKey,
+              child: AppShell(navigationShell: navigationShell),
+            ),
         branches: [
           StatefulShellBranch(
             observers: [ClientLogNavigatorObserver()],
@@ -237,6 +256,9 @@ final routerProvider = Provider<GoRouter>((ref) {
                   return TrainingTarget(
                     id: 'route.tracks',
                     child: TracksScreen(
+                      initialViewMode: query['view'] == 'groups'
+                          ? ViewMode.groups
+                          : null,
                       initialTrackId: int.tryParse(query['trackId'] ?? ''),
                       initialTrackCode: query['trackCode'],
                       initialAssemblyId: int.tryParse(
@@ -426,6 +448,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         name: 'profile',
         path: '/profile',
+        onExit: (context, state) async =>
+            !ref.read(authProvider).isLoggedIn ||
+            await (ref.read(authFormExitGuardsProvider).profile?.call() ??
+                Future.value(true)),
         parentNavigatorKey: _rootNavigatorKey,
         pageBuilder: (context, state) => _adaptivePage(
           context,
@@ -1046,7 +1072,20 @@ final routerProvider = Provider<GoRouter>((ref) {
             path: ':id',
             parentNavigatorKey: _rootNavigatorKey,
             pageBuilder: (context, state) {
-              final id = int.parse(state.pathParameters['id']!);
+              final id = _parsePositiveRouteId(state.pathParameters['id']);
+              if (id == null) {
+                return _adaptivePage(
+                  context,
+                  state,
+                  _InvalidLinkScreen(
+                    reason: tr(
+                      context,
+                      ru: 'Некорректный ID бланка выкупа',
+                      zh: '采购单ID无效',
+                    ),
+                  ),
+                );
+              }
               return _adaptivePage(
                 context,
                 state,

@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -179,16 +180,12 @@ class _SpOrganizerFulfillmentLinkSheetState
                     ),
                 ],
                 const SizedBox(height: 12),
-                TextField(
+                AppSearchField(
                   controller: _searchController,
                   onChanged: _onSearchChanged,
-                  textInputAction: TextInputAction.search,
                   onSubmitted: (_) => _load(),
-                  decoration: SpFinanceUi.inputDecoration(
-                    context,
-                    hintText: _searchHint(context, _kind, companyName),
-                    prefixIcon: Icons.search_rounded,
-                  ),
+                  textInputAction: TextInputAction.search,
+                  hintText: _searchHint(context, _kind, companyName),
                 ),
                 const SizedBox(height: 12),
                 if (_loading)
@@ -343,8 +340,8 @@ class _SpOrganizerFulfillmentLinkSheetState
                     Text(
                       tr(
                         context,
-                        ru: 'Без изменения текущей бизнес-логики',
-                        zh: '不更改现有业务逻辑',
+                        ru: 'Выберите подходящую сборку для товаров',
+                        zh: '为商品选择合适的集运',
                       ),
                       style: SpFinanceUi.labelStyle,
                     ),

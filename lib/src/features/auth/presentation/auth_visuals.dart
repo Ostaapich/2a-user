@@ -261,12 +261,14 @@ class _AuthTrustChip extends StatelessWidget {
         children: [
           Icon(item.icon, color: accent, size: 16),
           const SizedBox(width: 6),
-          Text(
-            item.label,
-            style: const TextStyle(
-              color: AuthVisuals.ink,
-              fontSize: 12,
-              fontWeight: FontWeight.w800,
+          Flexible(
+            child: Text(
+              item.label,
+              style: const TextStyle(
+                color: AuthVisuals.ink,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
         ],

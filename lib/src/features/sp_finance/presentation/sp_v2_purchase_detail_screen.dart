@@ -1,3 +1,6 @@
+import '../../../core/ui/app_search_field.dart';
+import 'sp_status_text.dart';
+import '../../../core/utils/commerce_text.dart';
 import 'dart:async';
 
 import 'package:dio/dio.dart';
@@ -8,9 +11,9 @@ import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../training/presentation/training_target.dart';
-import '../../../core/branding/company_branding_provider.dart';
 import '../../../core/network/api_config.dart';
 import '../../../core/ui/app_colors.dart';
+import '../../../core/ui/unsaved_changes_guard.dart';
 import '../../../core/ui/app_cached_media_image.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/empty_state.dart';
@@ -113,7 +116,7 @@ class _SpV2PurchaseDetailScreenState
             ),
             children: [
               SpPageHeader(
-                title: 'Совместная покупка',
+                title: tr(context, ru: 'СП', zh: '采购'),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -139,13 +142,27 @@ class _SpV2PurchaseDetailScreenState
               const SizedBox(height: 12),
               _DetailHero(purchase: purchase),
               const SizedBox(height: 12),
-              _PurchaseLifecycleCard(purchase: purchase),
-              const SizedBox(height: 12),
-              _QuickActions(
-                purchase: purchase,
-                onStatusChanged: (status) => _updateStatus(status),
+              Container(
+                decoration: SpFinanceUi.cardDecoration(),
+                child: ExpansionTile(
+                  key: PageStorageKey('sp-purchase-management-${purchase.id}'),
+                  title: Text(tr(context, ru: 'Управление СП', zh: '采购管理')),
+                  childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  children: [
+                    if (purchase.description?.trim().isNotEmpty == true) ...[
+                      Text(purchase.description!, style: SpFinanceUi.bodyStyle),
+                      const SizedBox(height: 12),
+                    ],
+                    _PurchaseLifecycleCard(purchase: purchase),
+                    const SizedBox(height: 12),
+                    _QuickActions(
+                      purchase: purchase,
+                      onStatusChanged: (status) => _updateStatus(status),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               _TabsBar(
                 selectedTab: activeTab,
                 showSettings: showSettingsTab,
@@ -239,6 +256,8 @@ class _SpV2PurchaseDetailScreenState
   Future<void> _showAddItemSheet(SpV2Purchase purchase) async {
     final created = await showSpFinanceModalSheet<bool>(
       context: context,
+      isDismissible: false,
+      enableDrag: false,
       builder: (context) => _AddItemSheet(purchase: purchase),
     );
     if (!mounted || created != true) return;
@@ -292,6 +311,8 @@ class _SpV2PurchaseDetailScreenState
   Future<void> _showEditItemSheet(SpV2Purchase purchase, SpV2Item item) async {
     final updated = await showSpFinanceModalSheet<bool>(
       context: context,
+      isDismissible: false,
+      enableDrag: false,
       builder: (context) => _EditItemSheet(purchase: purchase, item: item),
     );
     if (!mounted || updated != true) return;
@@ -575,17 +596,32 @@ class _SpV2PurchaseDetailScreenState
     final nextPaid = !allPaid;
     final repository = ref.read(spV2RepositoryProvider);
     try {
-      for (final item in items) {
-        await repository.setItemPayment(
-          item.id,
-          type: type,
-          paid: nextPaid,
-          amountRub: type == 'goods_payment'
-              ? _goodsPaymentAmountRub(item, purchase)
-              : _deliveryPaymentAmountRub(item),
+      if (items.any((item) => item.updatedAt == null)) {
+        _refreshDetail();
+        _showActionError(
+          StateError('missing-version'),
+          action: 'отметить оплату клиента',
         );
-        if (!mounted) return;
+        return;
       }
+      await repository.setCustomerItemsPayment(
+        customer.id,
+        purchaseId: purchase.id,
+        type: type,
+        paid: nextPaid,
+        items: items
+            .map(
+              (item) => (
+                id: item.id,
+                expectedUpdatedAt: item.updatedAt!,
+                amountRub: type == 'goods_payment'
+                    ? _goodsPaymentAmountRub(item, purchase)
+                    : _deliveryPaymentAmountRub(item),
+              ),
+            )
+            .toList(growable: false),
+      );
+      if (!mounted) return;
       _refreshDetail();
     } catch (error) {
       if (!mounted) return;
@@ -597,6 +633,7 @@ class _SpV2PurchaseDetailScreenState
       );
     } finally {
       _updatingPaymentKeys.remove(actionKey);
+      if (mounted) _refreshDetail();
     }
   }
 
@@ -610,21 +647,41 @@ class _SpV2PurchaseDetailScreenState
   void _showActionError(Object error, {required String action}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(_spActionErrorMessage(error, action: action))),
+      SnackBar(
+        content: Text(_spActionErrorMessage(context, error, action: action)),
+      ),
     );
   }
 }
 
-String _spActionErrorMessage(Object error, {required String action}) {
-  if (error is DioException &&
-      error.response?.data is Map &&
-      (error.response?.data as Map)['code'] == 'SP_BULK_ITEMS_STALE') {
-    return 'Данные товаров изменились после открытия расчёта. Обновите закупку и повторите действие.';
+String _spActionErrorMessage(
+  BuildContext context,
+  Object error, {
+  required String action,
+}) {
+  if ((error is DioException &&
+          error.response?.data is Map &&
+          (error.response?.data as Map)['code'] == 'SP_BULK_ITEMS_STALE') ||
+      (error is StateError && error.message == 'missing-version')) {
+    return tr(
+      context,
+      ru: 'Данные товаров изменились. Обновите закупку и повторите действие.',
+      zh: '商品数据已改变，请刷新采购后重试。',
+    );
   }
-  if (error is DioException && error.response?.statusCode == 404) {
-    return 'Не удалось $action: на сервере ещё нет нужного обновления совместных покупок. Нужно задеплоить backend.';
+  if ((error is StateError && error.message == 'atomic-bulk-unavailable') ||
+      (error is DioException && error.response?.statusCode == 404)) {
+    return tr(
+      context,
+      ru: 'Действие сейчас недоступно. Обновите закупку; если проблема повторится, обратитесь в поддержку.',
+      zh: '此操作暂不可用，请刷新采购。如果问题持续，请联系支持。',
+    );
   }
-  return 'Не удалось $action. Проверьте соединение и попробуйте ещё раз.';
+  return tr(
+    context,
+    ru: 'Не удалось $action. Данные сохранены в форме. Проверьте соединение и повторите попытку.',
+    zh: '操作失败，表单内容已保留。请检查网络后重试。',
+  );
 }
 
 String _currencySymbol(String currency) => currency == 'RUB' ? '₽' : '¥';
@@ -1026,97 +1083,74 @@ class _ContactActionChip extends StatelessWidget {
 
 class _DetailHero extends StatelessWidget {
   final SpV2Purchase purchase;
-
   const _DetailHero({required this.purchase});
 
   @override
-  Widget build(BuildContext context) {
-    return SpAnimatedHeroSurface(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 58,
-                height: 58,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.22),
-                  ),
-                ),
-                child: const Icon(
-                  Icons.groups_2_rounded,
-                  color: Colors.white,
-                  size: 30,
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      purchase.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontFamily: 'Gilroy',
-                        fontSize: 24,
-                        height: 1.04,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: -0.25,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      purchase.description?.trim().isNotEmpty == true
-                          ? purchase.description!
-                          : 'Клиенты, товары, выкуп, треки и оплаты в одном процессе.',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xE6FFFFFF),
-                        fontFamily: 'Gilroy',
-                        fontSize: 13,
-                        height: 1.2,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+  Widget build(BuildContext context) => SpAnimatedHeroSurface(
+    padding: const EdgeInsets.all(14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          purchase.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Colors.white,
+            fontFamily: 'Gilroy',
+            fontSize: 20,
+            height: 1.1,
+            fontWeight: FontWeight.w900,
           ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              SpHeroChip(icon: Icons.flag_rounded, label: purchase.statusLabel),
-              SpHeroChip(
-                icon: Icons.person_rounded,
-                label: '${purchase.stats.customersCount} клиентов',
+        ),
+        const SizedBox(height: 8),
+        SpHeroChip(
+          icon: Icons.flag_rounded,
+          label: isZh(context)
+              ? spStatusText(context, purchase.status)
+              : purchase.statusLabel,
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 12,
+          runSpacing: 4,
+          children: [
+            Text(
+              tr(
+                context,
+                ru: 'Клиентов: ${purchase.stats.customersCount}',
+                zh: '客户：${purchase.stats.customersCount}',
               ),
-              SpHeroChip(
-                icon: Icons.shopping_bag_rounded,
-                label: '${purchase.stats.itemsCount} товаров',
+              style: _metadataStyle,
+            ),
+            Text(
+              tr(
+                context,
+                ru: 'Товаров: ${purchase.stats.itemsCount}',
+                zh: '商品：${purchase.stats.itemsCount}',
               ),
-              SpHeroChip(
-                icon: purchase.currency == 'RUB'
-                    ? Icons.currency_ruble_rounded
-                    : Icons.currency_yuan_rounded,
-                label: purchase.currency == 'RUB' ? 'Расчёт в ₽' : 'Расчёт в ¥',
+              style: _metadataStyle,
+            ),
+            Text(
+              tr(
+                context,
+                ru: 'Расчёт в ${_currencySymbol(purchase.currency)}',
+                zh: '结算货币：${_currencySymbol(purchase.currency)}',
               ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+              style: _metadataStyle,
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+  static const _metadataStyle = TextStyle(
+    color: Color(0xE6FFFFFF),
+    fontFamily: 'Gilroy',
+    fontSize: 13,
+    height: 1.2,
+    fontWeight: FontWeight.w700,
+  );
 }
 
 class _PurchaseLifecycleCard extends StatelessWidget {
@@ -1519,7 +1553,9 @@ class _QuickActions extends StatelessWidget {
       icon: purchase.isAcceptingItems
           ? Icons.lock_rounded
           : Icons.lock_open_rounded,
-      label: purchase.isAcceptingItems ? 'Закрыть приём' : 'Открыть приём',
+      label: purchase.isAcceptingItems
+          ? tr(context, ru: 'Закрыть приём', zh: '停止接收')
+          : tr(context, ru: 'Открыть приём', zh: '开放接收'),
       filled: purchase.isAcceptingItems,
       onTap: () => onStatusChanged(
         purchase.isAcceptingItems ? 'closed_for_items' : 'open',
@@ -1686,110 +1722,113 @@ class _PurchaseRateSheetState extends ConsumerState<_PurchaseRateSheet> {
             color: Colors.white,
             borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
           ),
-          padding: EdgeInsets.fromLTRB(18, 10, 18, 18 + bottomInset),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 58,
-                height: 6,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE1E5ED),
-                  borderRadius: BorderRadius.circular(999),
+          child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: EdgeInsets.fromLTRB(18, 10, 18, 18 + bottomInset),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 58,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE1E5ED),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              SpAnimatedHeroSurface(
-                padding: const EdgeInsets.all(16),
-                child: const Row(
-                  children: [
-                    Icon(
-                      Icons.currency_exchange_rounded,
-                      color: Colors.white,
-                      size: 34,
-                    ),
-                    SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Курс юаня',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontFamily: 'Gilroy',
-                              fontSize: 22,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                          SizedBox(height: 4),
-                          Text(
-                            'Нужен для рублёвых итогов, оплат и прибыли.',
-                            style: TextStyle(
-                              color: Color(0xE6FFFFFF),
-                              fontFamily: 'Gilroy',
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
+                const SizedBox(height: 16),
+                SpAnimatedHeroSurface(
+                  padding: const EdgeInsets.all(16),
+                  child: const Row(
+                    children: [
+                      Icon(
+                        Icons.currency_exchange_rounded,
+                        color: Colors.white,
+                        size: 34,
                       ),
-                    ),
-                  ],
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Курс юаня',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontFamily: 'Gilroy',
+                                fontSize: 22,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Нужен для рублёвых итогов, оплат и прибыли.',
+                              style: TextStyle(
+                                color: Color(0xE6FFFFFF),
+                                fontFamily: 'Gilroy',
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _rateController,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _rateController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: SpFinanceUi.inputDecoration(
+                    context,
+                    labelText: '1 ¥ в рублях',
+                    hintText: 'Например: 12.80',
+                    suffixText: '₽',
+                  ),
                 ),
-                decoration: SpFinanceUi.inputDecoration(
-                  context,
-                  labelText: '1 ¥ в рублях',
-                  hintText: 'Например: 12.80',
-                  suffixText: '₽',
+                const SizedBox(height: 10),
+                const SpInfoNotice(
+                  title: 'Что пересчитается',
+                  message:
+                      'Цена клиента и цена выкупа в юанях будут использовать этот курс для расчёта рублёвых оплат и прибыли. Сами введённые цены в юанях не изменятся.',
+                  icon: Icons.calculate_rounded,
                 ),
-              ),
-              const SizedBox(height: 10),
-              const SpInfoNotice(
-                title: 'Что пересчитается',
-                message:
-                    'Цена клиента и цена выкупа в юанях будут использовать этот курс для расчёта рублёвых оплат и прибыли. Сами введённые цены в юанях не изменятся.',
-                icon: Icons.calculate_rounded,
-              ),
-              const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                height: 54,
-                child: ElevatedButton.icon(
-                  onPressed: _saving ? null : _save,
-                  icon: _saving
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(Icons.check_rounded),
-                  label: const Text('Сохранить курс'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: context.brandPrimary,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    textStyle: const TextStyle(
-                      fontFamily: 'Gilroy',
-                      fontSize: 16,
-                      fontWeight: FontWeight.w900,
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  height: 54,
+                  child: ElevatedButton.icon(
+                    onPressed: _saving ? null : _save,
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.check_rounded),
+                    label: const Text('Сохранить курс'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: context.brandPrimary,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      textStyle: const TextStyle(
+                        fontFamily: 'Gilroy',
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -1839,34 +1878,80 @@ class _TabsBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tabs = [
-      (Icons.shopping_bag_rounded, 'Товары', _PurchaseDetailTab.items),
-      (Icons.people_rounded, 'Участники', _PurchaseDetailTab.participants),
-      (Icons.payments_rounded, 'Финансы', _PurchaseDetailTab.finance),
-      (Icons.local_shipping_rounded, 'Треки', _PurchaseDetailTab.tracks),
+      (
+        Icons.shopping_bag_rounded,
+        tr(context, ru: 'Товары', zh: '商品'),
+        _PurchaseDetailTab.items,
+      ),
+      (
+        Icons.people_rounded,
+        tr(context, ru: 'Участники', zh: '参与者'),
+        _PurchaseDetailTab.participants,
+      ),
+      (
+        Icons.payments_rounded,
+        tr(context, ru: 'Финансы', zh: '财务'),
+        _PurchaseDetailTab.finance,
+      ),
+      (
+        Icons.local_shipping_rounded,
+        tr(context, ru: 'Треки', zh: '包裹'),
+        _PurchaseDetailTab.tracks,
+      ),
       if (showSettings)
-        (Icons.tune_rounded, 'Настройки', _PurchaseDetailTab.settings),
+        (
+          Icons.tune_rounded,
+          tr(context, ru: 'Настройки', zh: '设置'),
+          _PurchaseDetailTab.settings,
+        ),
     ];
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final width = textScale > 1.3 ? 124.0 : 88.0;
     return Container(
       padding: const EdgeInsets.all(6),
       decoration: SpFinanceUi.cardDecoration(),
       child: Row(
         children: [
-          for (var i = 0; i < tabs.length; i++)
-            Expanded(
-              child: Padding(
-                padding: EdgeInsets.only(right: i == tabs.length - 1 ? 0 : 6),
-                child: TrainingTarget(
-                  id: 'organizer.tab.${tabs[i].$3.name}',
-                  onActivate: () => onChanged(tabs[i].$3),
-                  child: _TabButton(
-                    icon: tabs[i].$1,
-                    label: tabs[i].$2,
-                    selected: selectedTab == tabs[i].$3,
-                    onTap: () => onChanged(tabs[i].$3),
-                  ),
-                ),
+          Expanded(
+            child: SingleChildScrollView(
+              key: const ValueKey('sp-purchase-tabs-scroll'),
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (var i = 0; i < tabs.length; i++)
+                    Padding(
+                      padding: EdgeInsets.only(
+                        right: i == tabs.length - 1 ? 0 : 6,
+                      ),
+                      child: SizedBox(
+                        width: width,
+                        child: TrainingTarget(
+                          id: 'organizer.tab.${tabs[i].$3.name}',
+                          onActivate: () => onChanged(tabs[i].$3),
+                          child: _TabButton(
+                            icon: tabs[i].$1,
+                            label: tabs[i].$2,
+                            selected: selectedTab == tabs[i].$3,
+                            onTap: () => onChanged(tabs[i].$3),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
+          ),
+          Tooltip(
+            message: tr(context, ru: 'Прокрутите разделы', zh: '横向滑动查看页面'),
+            child: const Padding(
+              padding: EdgeInsets.only(left: 4),
+              child: Icon(
+                Icons.chevron_right_rounded,
+                size: 18,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1895,7 +1980,7 @@ class _TabButton extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(16),
         child: SizedBox(
-          height: 48,
+          height: 52,
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -1905,19 +1990,15 @@ class _TabButton extends StatelessWidget {
                 color: selected ? Colors.white : context.brandPrimary,
               ),
               const SizedBox(height: 3),
-              Flexible(
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    style: TextStyle(
-                      color: selected ? Colors.white : AppColors.textSecondary,
-                      fontFamily: 'Gilroy',
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: selected ? Colors.white : AppColors.textSecondary,
+                  fontFamily: 'Gilroy',
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
                 ),
               ),
             ],
@@ -2009,7 +2090,7 @@ class _ItemsTab extends StatelessWidget {
             key: const ValueKey('sp-add-item-tab-action'),
             onPressed: onAddItem,
             icon: const Icon(Icons.add_shopping_cart_rounded),
-            label: const Text('Добавить товар'),
+            label: Text(commerceText(context, 'Добавить товар')),
             style: FilledButton.styleFrom(
               backgroundColor: context.brandPrimary,
               foregroundColor: Colors.white,
@@ -2018,7 +2099,7 @@ class _ItemsTab extends StatelessWidget {
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(17),
               ),
-              textStyle: const TextStyle(
+              textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
                 fontFamily: 'Gilroy',
                 fontSize: 13,
                 fontWeight: FontWeight.w900,
@@ -2027,16 +2108,22 @@ class _ItemsTab extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        if (onBulkManage != null) ...[
-          _BulkManageActionCard(
-            itemsCount: purchase.items.length,
-            onTap: onBulkManage!,
-          ),
-          const SizedBox(height: 12),
-        ],
-        _BulkPriceActionCard(purchase: purchase, onTap: onBulkPrice),
-        const SizedBox(height: 12),
-        _BulkDeliveryActionCard(purchase: purchase, onTap: onBulkDelivery),
+        ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+          title: Text(tr(context, ru: 'Массовые действия', zh: '批量操作')),
+          children: [
+            if (onBulkManage != null) ...[
+              _BulkManageActionCard(
+                itemsCount: purchase.items.length,
+                onTap: onBulkManage!,
+              ),
+              const SizedBox(height: 12),
+            ],
+            _BulkPriceActionCard(purchase: purchase, onTap: onBulkPrice),
+            const SizedBox(height: 12),
+            _BulkDeliveryActionCard(purchase: purchase, onTap: onBulkDelivery),
+          ],
+        ),
         const SizedBox(height: 12),
         ...purchase.items.map(
           (item) => Padding(
@@ -2613,20 +2700,7 @@ class _BulkClientPriceSheetState extends ConsumerState<_BulkClientPriceSheet> {
               .toList(growable: false),
         );
       } else {
-        for (final item in items) {
-          final clientPrice = _clientPriceFor(item);
-          if (clientPrice == null) continue;
-          await repository.updateItem(
-            item.id,
-            currency: widget.purchase.currency,
-            clientPrice: clientPrice,
-            totalDueRub: _itemTotalRubWithClientPrice(
-              item,
-              widget.purchase,
-              clientPrice,
-            ),
-          );
-        }
+        throw StateError('atomic-bulk-unavailable');
       }
       if (!mounted) return;
       Navigator.of(context).pop(true);
@@ -2636,6 +2710,7 @@ class _BulkClientPriceSheetState extends ConsumerState<_BulkClientPriceSheet> {
         SnackBar(
           content: Text(
             _spActionErrorMessage(
+              context,
               error,
               action: 'массово проставить цены клиента',
             ),
@@ -3132,20 +3207,7 @@ class _BulkDeliverySheetState extends ConsumerState<_BulkDeliverySheet> {
               .toList(growable: false),
         );
       } else {
-        for (final item in items) {
-          final actualRub = actualFor(item);
-          final clientRub = clientFor(item);
-          await repository.updateItem(
-            item.id,
-            currency: widget.purchase.currency,
-            shippingCostActualRub: actualRub,
-            shippingCostRub: clientRub,
-            totalDueRub:
-                _itemBaseRub(item, widget.purchase) +
-                clientRub +
-                item.additionalExpensesRub,
-          );
-        }
+        throw StateError('atomic-bulk-unavailable');
       }
       if (!mounted) return;
       Navigator.of(context).pop(true);
@@ -3154,7 +3216,11 @@ class _BulkDeliverySheetState extends ConsumerState<_BulkDeliverySheet> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            _spActionErrorMessage(error, action: 'массово рассчитать доставку'),
+            _spActionErrorMessage(
+              context,
+              error,
+              action: 'массово рассчитать доставку',
+            ),
           ),
         ),
       );
@@ -3428,28 +3494,31 @@ class _ItemCard extends StatelessWidget {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: [
-                            _ItemMiniBadge(
-                              icon: Icons.inventory_2_rounded,
-                              label: '$quantity шт.',
-                            ),
-                            if (item.sourceUrl?.trim().isNotEmpty == true)
-                              _ItemMiniBadge(
-                                icon: Icons.link_rounded,
-                                label: _externalLinkHostLabel(item.sourceUrl!),
-                                onTap: () =>
-                                    _openExternalLink(context, item.sourceUrl!),
-                              ),
-                          ],
-                        ),
                       ],
                     ),
                   ),
-                  _SoftStatusPill(label: item.statusLabel),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  _SoftStatusPill(
+                    label: isZh(context)
+                        ? spStatusText(context, item.status)
+                        : item.statusLabel,
+                  ),
+                  _ItemMiniBadge(
+                    icon: Icons.inventory_2_rounded,
+                    label: '$quantity шт.',
+                  ),
+                  if (item.sourceUrl?.trim().isNotEmpty == true)
+                    _ItemMiniBadge(
+                      icon: Icons.link_rounded,
+                      label: _externalLinkHostLabel(item.sourceUrl!),
+                      onTap: () => _openExternalLink(context, item.sourceUrl!),
+                    ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -4915,7 +4984,7 @@ class _EditShipmentSheetState extends ConsumerState<_EditShipmentSheet> {
                           .map((status) {
                             final selected = status.code == _status;
                             return ChoiceChip(
-                              label: Text(status.label),
+                              label: Text(commerceText(context, status.label)),
                               selected: selected,
                               onSelected: (_) =>
                                   setState(() => _status = status.code),
@@ -5562,7 +5631,11 @@ class _AddExpenseSheetState extends ConsumerState<_AddExpenseSheet> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            _spActionErrorMessage(error, action: 'добавить общий расход'),
+            _spActionErrorMessage(
+              context,
+              error,
+              action: 'добавить общий расход',
+            ),
           ),
         ),
       );
@@ -6320,7 +6393,7 @@ class _InfoChip extends StatelessWidget {
         children: [
           Icon(icon, color: context.brandPrimary, size: 15),
           const SizedBox(width: 6),
-          Text(label, style: SpFinanceUi.labelStyle),
+          Flexible(child: Text(label, style: SpFinanceUi.labelStyle)),
         ],
       ),
     );
@@ -6408,7 +6481,10 @@ class _StatusSelectTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text('Статус товара', style: SpFinanceUi.labelStyle),
+                    Text(
+                      commerceText(context, 'Статус товара'),
+                      style: SpFinanceUi.labelStyle,
+                    ),
                     const SizedBox(height: 3),
                     Text(
                       label,
@@ -6468,7 +6544,7 @@ class _ItemStatusSheet extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 18),
               child: SpAnimatedHeroSurface(
                 padding: const EdgeInsets.all(16),
-                child: const Row(
+                child: Row(
                   children: [
                     Icon(Icons.flag_rounded, color: Colors.white, size: 34),
                     SizedBox(width: 12),
@@ -6477,7 +6553,7 @@ class _ItemStatusSheet extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Статус товара',
+                            commerceText(context, 'Статус товара'),
                             style: TextStyle(
                               color: Colors.white,
                               fontFamily: 'Gilroy',
@@ -6487,7 +6563,10 @@ class _ItemStatusSheet extends StatelessWidget {
                           ),
                           SizedBox(height: 4),
                           Text(
-                            'Выберите этап обработки позиции в СП.',
+                            commerceText(
+                              context,
+                              'Выберите этап обработки позиции в СП.',
+                            ),
                             style: TextStyle(
                               color: Color(0xE6FFFFFF),
                               fontFamily: 'Gilroy',
@@ -6550,7 +6629,7 @@ class _ItemStatusSheet extends StatelessWidget {
                             const SizedBox(width: 12),
                             Expanded(
                               child: Text(
-                                status.label,
+                                commerceText(context, status.label),
                                 style: const TextStyle(
                                   color: AppColors.textPrimary,
                                   fontFamily: 'Gilroy',
@@ -7091,7 +7170,6 @@ class _AddItemSheetState extends ConsumerState<_AddItemSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final companyName = ref.watch(companyNameProvider);
     final customers = ref.watch(spV2CustomersProvider);
     final capabilities = ref
         .watch(spOrganizerCapabilitiesProvider)
@@ -7111,500 +7189,578 @@ class _AddItemSheetState extends ConsumerState<_AddItemSheet> {
     final currency = widget.purchase.currency;
     final priceSuffix = _currencySymbol(currency);
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () => FocusScope.of(context).unfocus(),
-      child: SpFinanceModalSurface(
-        key: const ValueKey('add-item-modal'),
-        icon: Icons.add_shopping_cart_rounded,
-        title: 'Добавить товар',
-        subtitle: tr(
-          context,
-          ru: 'Заполните вручную или перенесите готовые данные из сервисов $companyName.',
-          zh: '手动填写或从$companyName服务导入现有数据。',
-        ),
-        maxHeightFactor: 0.94,
-        keyboardAware: true,
-        body: ListView(
-          key: const ValueKey('add-item-form-list'),
-          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          padding: const EdgeInsets.only(top: 14),
-          children: [
-            if (hasImports) ...[
-              _AddItemSectionCard(
-                icon: Icons.auto_awesome_rounded,
-                title: 'Источник данных',
-                subtitle:
-                    'Самый быстрый способ — выбрать уже существующий товар.',
-                child: Column(
+    return UnsavedFormGuard(
+      controllers: [
+        _customerNameController,
+        _customerPhoneController,
+        _customerTelegramController,
+        _customerWhatsappController,
+        _customerWechatController,
+        _titleController,
+        _quantityController,
+        _sourceUrlController,
+        _sellerInfoController,
+        _descriptionController,
+        _purchasePriceController,
+        _clientPriceController,
+        _shippingActualController,
+        _shippingClientController,
+      ],
+      extraState:
+          '$_selectedCustomerId:${_pickedImages.length}:$_useExistingCustomer',
+      isBusy: _isSaving,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: SpFinanceModalSurface(
+          key: const ValueKey('add-item-modal'),
+          icon: Icons.add_shopping_cart_rounded,
+          title: commerceText(context, 'Добавить товар'),
+          maxHeightFactor: 0.94,
+          keyboardAware: true,
+          body: ListView(
+            key: const ValueKey('add-item-form-list'),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.only(top: 14),
+            children: [
+              if (hasImports) ...[
+                ExpansionTile(
+                  title: Text(tr(context, ru: 'Импорт товара', zh: '导入商品')),
                   children: [
-                    if (trackImportEnabled) ...[
-                      _ItemImportEntry(
-                        valueKey: 'track-import-entry',
-                        icon: Icons.qr_code_2_rounded,
-                        title: 'Добавить из трека',
-                        subtitle:
-                            'Фото, название, количество и трек-номер перенесутся в СП.',
-                        onTap: _openTrackImport,
+                    Column(
+                      children: [
+                        if (trackImportEnabled) ...[
+                          _ItemImportEntry(
+                            valueKey: 'track-import-entry',
+                            icon: Icons.qr_code_2_rounded,
+                            title: commerceText(context, 'Добавить из трека'),
+                            subtitle: commerceText(
+                              context,
+                              'Фото, название, количество и трек-номер перенесутся в СП.',
+                            ),
+                            onTap: _openTrackImport,
+                          ),
+                          const SizedBox(height: 9),
+                        ],
+                        if (previousPurchaseImportEnabled) ...[
+                          _ItemImportEntry(
+                            valueKey: 'previous-purchase-import-entry',
+                            icon: Icons.history_rounded,
+                            title: commerceText(context, 'Из прошлой закупки'),
+                            subtitle: commerceText(
+                              context,
+                              'Карточка, фото и цены за единицу заполнятся автоматически.',
+                            ),
+                            onTap: _openPreviousPurchaseImport,
+                          ),
+                          const SizedBox(height: 9),
+                        ],
+                        if (purchaseBlankImportEnabled) ...[
+                          _ItemImportEntry(
+                            valueKey: 'purchase-blank-import-entry',
+                            icon: Icons.receipt_long_outlined,
+                            title: commerceText(context, 'Из бланка выкупа'),
+                            subtitle: commerceText(
+                              context,
+                              'Фото, ссылка, параметры, количество и цена выкупа перенесутся автоматически.',
+                            ),
+                            onTap: _openPurchaseBlankImport,
+                          ),
+                          const SizedBox(height: 9),
+                        ],
+                        if (garageImportEnabled)
+                          _ItemImportEntry(
+                            valueKey: 'garage-import-entry',
+                            icon: Icons.garage_outlined,
+                            title: commerceText(context, 'Из Garage'),
+                            subtitle: commerceText(
+                              context,
+                              'Карточка, фото, количество и цена покупки перенесутся автоматически.',
+                            ),
+                            onTap: _openGarageImport,
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (currency == 'CNY' && widget.purchase.purchaseRate <= 0) ...[
+                SpInfoNotice(
+                  title: commerceText(context, 'Курс юаня пока не указан'),
+                  message: commerceText(
+                    context,
+                    'Товар можно добавить сейчас. Рублёвые итоги и оплаты появятся после указания курса в настройках СП.',
+                  ),
+                  icon: Icons.currency_exchange_rounded,
+                ),
+                const SizedBox(height: 12),
+              ],
+              _AddItemSectionCard(
+                key: const ValueKey('add-item-customer-section'),
+                icon: Icons.person_outline_rounded,
+                title: commerceText(context, 'Участник'),
+                subtitle: commerceText(
+                  context,
+                  'Выберите существующего или создайте нового клиента.',
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    customers.when(
+                      loading: () => const LinearProgressIndicator(),
+                      error: (_, _) => const SizedBox.shrink(),
+                      data: (items) => items.isEmpty
+                          ? const SizedBox.shrink()
+                          : LayoutBuilder(
+                              builder: (context, constraints) {
+                                final buttons = <Widget>[
+                                  _AddItemModeButton(
+                                    key: const ValueKey(
+                                      'add-item-new-customer-mode',
+                                    ),
+                                    icon: Icons.person_add_alt_1_rounded,
+                                    label: commerceText(context, 'Новый'),
+                                    selected: !_useExistingCustomer,
+                                    onTap: () => setState(() {
+                                      _useExistingCustomer = false;
+                                      _selectedCustomerId = null;
+                                    }),
+                                  ),
+                                  _AddItemModeButton(
+                                    key: const ValueKey(
+                                      'add-item-existing-customer-mode',
+                                    ),
+                                    icon: Icons.people_alt_outlined,
+                                    label: commerceText(context, 'Из списка'),
+                                    selected: _useExistingCustomer,
+                                    onTap: () => _selectExistingCustomer(items),
+                                  ),
+                                ];
+                                if (MediaQuery.textScalerOf(context).scale(1) >
+                                        1.3 &&
+                                    constraints.maxWidth < 300) {
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      buttons.first,
+                                      const SizedBox(height: 8),
+                                      buttons.last,
+                                    ],
+                                  );
+                                }
+                                return Row(
+                                  children: [
+                                    Expanded(child: buttons.first),
+                                    const SizedBox(width: 8),
+                                    Expanded(child: buttons.last),
+                                  ],
+                                );
+                              },
+                            ),
+                    ),
+                    if (_useExistingCustomer) ...[
+                      const SizedBox(height: 10),
+                      customers.when(
+                        loading: () =>
+                            const Center(child: CircularProgressIndicator()),
+                        error: (_, _) => const SizedBox.shrink(),
+                        data: (items) {
+                          SpV2Customer? selected;
+                          for (final customer in items) {
+                            if (customer.id == _selectedCustomerId) {
+                              selected = customer;
+                              break;
+                            }
+                          }
+                          return _SelectedAddItemCustomer(
+                            key: const ValueKey('add-item-selected-customer'),
+                            customer: selected,
+                            onTap: () => _selectExistingCustomer(items),
+                          );
+                        },
+                      ),
+                    ] else ...[
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _customerNameController,
+                        textInputAction: TextInputAction.next,
+                        decoration: SpFinanceUi.inputDecoration(
+                          context,
+                          labelText: commerceText(context, 'Имя участника *'),
+                          hintText: commerceText(
+                            context,
+                            'Например, Иван Иванов',
+                          ),
+                          prefixIcon: Icons.badge_outlined,
+                        ),
                       ),
                       const SizedBox(height: 9),
-                    ],
-                    if (previousPurchaseImportEnabled) ...[
-                      _ItemImportEntry(
-                        valueKey: 'previous-purchase-import-entry',
-                        icon: Icons.history_rounded,
-                        title: 'Из прошлой закупки',
-                        subtitle:
-                            'Карточка, фото и unit-цены заполнятся автоматически.',
-                        onTap: _openPreviousPurchaseImport,
+                      _AddItemOptionalSection(
+                        key: const ValueKey('add-item-customer-contacts'),
+                        title: commerceText(context, 'Контакты участника'),
+                        subtitle: commerceText(
+                          context,
+                          'Телефон и мессенджеры — необязательно',
+                        ),
+                        icon: Icons.chat_bubble_outline_rounded,
+                        expanded: _showCustomerContacts,
+                        onToggle: () => setState(
+                          () => _showCustomerContacts = !_showCustomerContacts,
+                        ),
+                        child: Column(
+                          children: [
+                            TextField(
+                              controller: _customerPhoneController,
+                              keyboardType: TextInputType.phone,
+                              textInputAction: TextInputAction.next,
+                              decoration: SpFinanceUi.inputDecoration(
+                                context,
+                                labelText: commerceText(context, 'Телефон'),
+                              ),
+                            ),
+                            const SizedBox(height: 9),
+                            TextField(
+                              controller: _customerTelegramController,
+                              textInputAction: TextInputAction.next,
+                              decoration: SpFinanceUi.inputDecoration(
+                                context,
+                                labelText: 'Telegram',
+                                hintText: commerceText(
+                                  context,
+                                  '@username или ссылка',
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 9),
+                            LayoutBuilder(
+                              builder: (context, constraints) {
+                                final fields = [
+                                  TextField(
+                                    controller: _customerWhatsappController,
+                                    textInputAction: TextInputAction.next,
+                                    decoration: SpFinanceUi.inputDecoration(
+                                      context,
+                                      labelText: 'WhatsApp',
+                                    ),
+                                  ),
+                                  TextField(
+                                    controller: _customerWechatController,
+                                    textInputAction: TextInputAction.next,
+                                    decoration: SpFinanceUi.inputDecoration(
+                                      context,
+                                      labelText: 'WeChat',
+                                    ),
+                                  ),
+                                ];
+                                if (constraints.maxWidth < 380) {
+                                  return Column(
+                                    children: [
+                                      fields.first,
+                                      const SizedBox(height: 9),
+                                      fields.last,
+                                    ],
+                                  );
+                                }
+                                return Row(
+                                  children: [
+                                    Expanded(child: fields.first),
+                                    const SizedBox(width: 9),
+                                    Expanded(child: fields.last),
+                                  ],
+                                );
+                              },
+                            ),
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 9),
                     ],
-                    if (purchaseBlankImportEnabled) ...[
-                      _ItemImportEntry(
-                        valueKey: 'purchase-blank-import-entry',
-                        icon: Icons.receipt_long_outlined,
-                        title: 'Из бланка выкупа',
-                        subtitle:
-                            'Фото, ссылка, параметры, количество и цена выкупа перенесутся автоматически.',
-                        onTap: _openPurchaseBlankImport,
-                      ),
-                      const SizedBox(height: 9),
-                    ],
-                    if (garageImportEnabled)
-                      _ItemImportEntry(
-                        valueKey: 'garage-import-entry',
-                        icon: Icons.garage_outlined,
-                        title: 'Из Garage',
-                        subtitle:
-                            'Карточка, фото, количество и цена покупки перенесутся автоматически.',
-                        onTap: _openGarageImport,
-                      ),
                   ],
                 ),
               ),
               const SizedBox(height: 12),
-            ],
-            if (currency == 'CNY' && widget.purchase.purchaseRate <= 0) ...[
-              const SpInfoNotice(
-                title: 'Курс юаня пока не указан',
-                message:
-                    'Товар можно добавить сейчас. Рублёвые итоги и оплаты появятся после указания курса в настройках СП.',
-                icon: Icons.currency_exchange_rounded,
-              ),
-              const SizedBox(height: 12),
-            ],
-            _AddItemSectionCard(
-              key: const ValueKey('add-item-customer-section'),
-              icon: Icons.person_outline_rounded,
-              title: 'Участник',
-              subtitle: 'Выберите существующего или создайте нового клиента.',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  customers.when(
-                    loading: () => const LinearProgressIndicator(),
-                    error: (_, _) => const SizedBox.shrink(),
-                    data: (items) => items.isEmpty
-                        ? const SizedBox.shrink()
-                        : Row(
-                            children: [
-                              Expanded(
-                                child: _AddItemModeButton(
-                                  key: const ValueKey(
-                                    'add-item-new-customer-mode',
-                                  ),
-                                  icon: Icons.person_add_alt_1_rounded,
-                                  label: 'Новый',
-                                  selected: !_useExistingCustomer,
-                                  onTap: () => setState(() {
-                                    _useExistingCustomer = false;
-                                    _selectedCustomerId = null;
-                                  }),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: _AddItemModeButton(
-                                  key: const ValueKey(
-                                    'add-item-existing-customer-mode',
-                                  ),
-                                  icon: Icons.people_alt_outlined,
-                                  label: 'Из списка',
-                                  selected: _useExistingCustomer,
-                                  onTap: () => _selectExistingCustomer(items),
-                                ),
-                              ),
-                            ],
+              _AddItemSectionCard(
+                key: const ValueKey('add-item-product-section'),
+                icon: Icons.shopping_bag_outlined,
+                title: commerceText(context, 'Товар'),
+                subtitle: commerceText(
+                  context,
+                  'Название и количество обязательны.',
+                ),
+                child: Column(
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final titleField = TextField(
+                          controller: _titleController,
+                          textInputAction: TextInputAction.next,
+                          decoration: SpFinanceUi.inputDecoration(
+                            context,
+                            labelText: commerceText(
+                              context,
+                              'Название товара *',
+                            ),
+                            hintText: commerceText(context, 'Что покупаем'),
                           ),
-                  ),
-                  if (_useExistingCustomer) ...[
-                    const SizedBox(height: 10),
-                    customers.when(
-                      loading: () =>
-                          const Center(child: CircularProgressIndicator()),
-                      error: (_, _) => const SizedBox.shrink(),
-                      data: (items) {
-                        SpV2Customer? selected;
-                        for (final customer in items) {
-                          if (customer.id == _selectedCustomerId) {
-                            selected = customer;
-                            break;
-                          }
+                        );
+                        final quantityField = TextField(
+                          controller: _quantityController,
+                          keyboardType: TextInputType.number,
+                          textInputAction: TextInputAction.next,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                          ],
+                          decoration: SpFinanceUi.inputDecoration(
+                            context,
+                            labelText: commerceText(context, 'Количество *'),
+                            suffixText: commerceText(context, 'шт.'),
+                          ),
+                        );
+                        if (constraints.maxWidth < 360) {
+                          return Column(
+                            children: [
+                              titleField,
+                              const SizedBox(height: 9),
+                              quantityField,
+                            ],
+                          );
                         }
-                        return _SelectedAddItemCustomer(
-                          key: const ValueKey('add-item-selected-customer'),
-                          customer: selected,
-                          onTap: () => _selectExistingCustomer(items),
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: titleField),
+                            const SizedBox(width: 9),
+                            SizedBox(width: 116, child: quantityField),
+                          ],
                         );
                       },
                     ),
-                  ] else ...[
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _customerNameController,
-                      textInputAction: TextInputAction.next,
-                      decoration: SpFinanceUi.inputDecoration(
-                        context,
-                        labelText: 'Имя участника *',
-                        hintText: 'Например, Иван Иванов',
-                        prefixIcon: Icons.badge_outlined,
-                      ),
-                    ),
                     const SizedBox(height: 9),
+                    _LinkTextField(
+                      controller: _sourceUrlController,
+                      labelText: commerceText(context, 'Ссылка на товар'),
+                    ),
+                    const SizedBox(height: 10),
+                    _PickedImagesBlock(
+                      images: _pickedImages,
+                      onPick: _pickImages,
+                      onRemove: (index) =>
+                          setState(() => _pickedImages.removeAt(index)),
+                    ),
+                    const SizedBox(height: 10),
                     _AddItemOptionalSection(
-                      key: const ValueKey('add-item-customer-contacts'),
-                      title: 'Контакты участника',
-                      subtitle: 'Телефон и мессенджеры — необязательно',
-                      icon: Icons.chat_bubble_outline_rounded,
-                      expanded: _showCustomerContacts,
-                      onToggle: () => setState(
-                        () => _showCustomerContacts = !_showCustomerContacts,
+                      key: const ValueKey('add-item-details-section'),
+                      title: commerceText(context, 'Параметры и комментарий'),
+                      subtitle: commerceText(
+                        context,
+                        'Размер, цвет, продавец и заметки',
                       ),
+                      icon: Icons.tune_rounded,
+                      expanded: _showDetails,
+                      onToggle: () =>
+                          setState(() => _showDetails = !_showDetails),
                       child: Column(
                         children: [
                           TextField(
-                            controller: _customerPhoneController,
-                            keyboardType: TextInputType.phone,
-                            textInputAction: TextInputAction.next,
+                            controller: _sellerInfoController,
+                            minLines: 2,
+                            maxLines: 3,
                             decoration: SpFinanceUi.inputDecoration(
                               context,
-                              labelText: 'Телефон',
+                              labelText: commerceText(
+                                context,
+                                'Параметры товара / продавец',
+                              ),
+                              hintText: commerceText(
+                                context,
+                                'Размер, цвет, модель, продавец, WeChat',
+                              ),
                             ),
                           ),
                           const SizedBox(height: 9),
                           TextField(
-                            controller: _customerTelegramController,
-                            textInputAction: TextInputAction.next,
+                            controller: _descriptionController,
+                            minLines: 2,
+                            maxLines: 4,
                             decoration: SpFinanceUi.inputDecoration(
                               context,
-                              labelText: 'Telegram',
-                              hintText: '@username или ссылка',
+                              labelText: commerceText(context, 'Комментарий'),
                             ),
-                          ),
-                          const SizedBox(height: 9),
-                          LayoutBuilder(
-                            builder: (context, constraints) {
-                              final fields = [
-                                TextField(
-                                  controller: _customerWhatsappController,
-                                  textInputAction: TextInputAction.next,
-                                  decoration: SpFinanceUi.inputDecoration(
-                                    context,
-                                    labelText: 'WhatsApp',
-                                  ),
-                                ),
-                                TextField(
-                                  controller: _customerWechatController,
-                                  textInputAction: TextInputAction.next,
-                                  decoration: SpFinanceUi.inputDecoration(
-                                    context,
-                                    labelText: 'WeChat',
-                                  ),
-                                ),
-                              ];
-                              if (constraints.maxWidth < 380) {
-                                return Column(
-                                  children: [
-                                    fields.first,
-                                    const SizedBox(height: 9),
-                                    fields.last,
-                                  ],
-                                );
-                              }
-                              return Row(
-                                children: [
-                                  Expanded(child: fields.first),
-                                  const SizedBox(width: 9),
-                                  Expanded(child: fields.last),
-                                ],
-                              );
-                            },
                           ),
                         ],
                       ),
                     ),
                   ],
-                ],
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            _AddItemSectionCard(
-              key: const ValueKey('add-item-product-section'),
-              icon: Icons.shopping_bag_outlined,
-              title: 'Товар',
-              subtitle: 'Название и количество обязательны.',
-              child: Column(
-                children: [
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      final titleField = TextField(
-                        controller: _titleController,
-                        textInputAction: TextInputAction.next,
-                        decoration: SpFinanceUi.inputDecoration(
-                          context,
-                          labelText: 'Название товара *',
-                          hintText: 'Что покупаем',
-                        ),
-                      );
-                      final quantityField = TextField(
-                        controller: _quantityController,
-                        keyboardType: TextInputType.number,
-                        textInputAction: TextInputAction.next,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                        ],
-                        decoration: SpFinanceUi.inputDecoration(
-                          context,
-                          labelText: 'Количество *',
-                          suffixText: 'шт.',
-                        ),
-                      );
-                      if (constraints.maxWidth < 360) {
-                        return Column(
-                          children: [
-                            titleField,
-                            const SizedBox(height: 9),
-                            quantityField,
-                          ],
-                        );
-                      }
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(child: titleField),
-                          const SizedBox(width: 9),
-                          SizedBox(width: 116, child: quantityField),
-                        ],
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 9),
-                  _LinkTextField(
-                    controller: _sourceUrlController,
-                    labelText: 'Ссылка на товар',
-                  ),
-                  const SizedBox(height: 10),
-                  _PickedImagesBlock(
-                    images: _pickedImages,
-                    onPick: _pickImages,
-                    onRemove: (index) =>
-                        setState(() => _pickedImages.removeAt(index)),
-                  ),
-                  const SizedBox(height: 10),
-                  _AddItemOptionalSection(
-                    key: const ValueKey('add-item-details-section'),
-                    title: 'Параметры и комментарий',
-                    subtitle: 'Размер, цвет, продавец и заметки',
-                    icon: Icons.tune_rounded,
-                    expanded: _showDetails,
-                    onToggle: () =>
-                        setState(() => _showDetails = !_showDetails),
-                    child: Column(
-                      children: [
-                        TextField(
-                          controller: _sellerInfoController,
-                          minLines: 2,
-                          maxLines: 3,
-                          decoration: SpFinanceUi.inputDecoration(
-                            context,
-                            labelText: 'Параметры товара / продавец',
-                            hintText: 'Размер, цвет, модель, продавец, WeChat',
-                          ),
-                        ),
-                        const SizedBox(height: 9),
-                        TextField(
-                          controller: _descriptionController,
-                          minLines: 2,
-                          maxLines: 4,
-                          decoration: SpFinanceUi.inputDecoration(
-                            context,
-                            labelText: 'Комментарий',
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            _AddItemSectionCard(
-              key: const ValueKey('add-item-prices-section'),
-              icon: Icons.payments_outlined,
-              title: 'Цены',
-              subtitle:
+              const SizedBox(height: 12),
+              _AddItemSectionCard(
+                key: const ValueKey('add-item-prices-section'),
+                icon: Icons.payments_outlined,
+                title: commerceText(context, 'Цены'),
+                subtitle: commerceText(
+                  context,
                   'Укажите цену за одну штуку. Маржа посчитается автоматически.',
-              child: Column(
-                children: [
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      final purchaseField = TextField(
-                        controller: _purchasePriceController,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        textInputAction: TextInputAction.next,
-                        decoration: SpFinanceUi.inputDecoration(
-                          context,
-                          labelText: 'Цена выкупа',
-                          hintText: 'Себестоимость',
-                          suffixText: priceSuffix,
-                        ),
-                      );
-                      final clientField = TextField(
-                        controller: _clientPriceController,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        textInputAction: TextInputAction.next,
-                        decoration: SpFinanceUi.inputDecoration(
-                          context,
-                          labelText: 'Цена участника',
-                          hintText: 'С наценкой',
-                          suffixText: priceSuffix,
-                        ),
-                      );
-                      if (constraints.maxWidth < 400) {
-                        return Column(
+                ),
+                child: Column(
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final purchaseField = TextField(
+                          controller: _purchasePriceController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          textInputAction: TextInputAction.next,
+                          decoration: SpFinanceUi.inputDecoration(
+                            context,
+                            labelText: commerceText(context, 'Цена выкупа'),
+                            hintText: commerceText(context, 'Себестоимость'),
+                            suffixText: priceSuffix,
+                          ),
+                        );
+                        final clientField = TextField(
+                          controller: _clientPriceController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          textInputAction: TextInputAction.next,
+                          decoration: SpFinanceUi.inputDecoration(
+                            context,
+                            labelText: commerceText(context, 'Цена участника'),
+                            hintText: commerceText(context, 'С наценкой'),
+                            suffixText: priceSuffix,
+                          ),
+                        );
+                        if (constraints.maxWidth < 400) {
+                          return Column(
+                            children: [
+                              purchaseField,
+                              const SizedBox(height: 9),
+                              clientField,
+                            ],
+                          );
+                        }
+                        return Row(
                           children: [
-                            purchaseField,
-                            const SizedBox(height: 9),
-                            clientField,
+                            Expanded(child: purchaseField),
+                            const SizedBox(width: 9),
+                            Expanded(child: clientField),
                           ],
                         );
-                      }
-                      return Row(
-                        children: [
-                          Expanded(child: purchaseField),
-                          const SizedBox(width: 9),
-                          Expanded(child: clientField),
-                        ],
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 9),
-                  const _AddItemHelperLine(
-                    icon: Icons.calculate_outlined,
-                    text:
+                      },
+                    ),
+                    const SizedBox(height: 9),
+                    _AddItemHelperLine(
+                      icon: Icons.calculate_outlined,
+                      text: commerceText(
+                        context,
                         'Итог участника = цена участника × количество. Разница с ценой выкупа — ваша маржа.',
-                  ),
-                ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            _AddItemOptionalSection(
-              key: const ValueKey('add-item-delivery-section'),
-              title: 'Доставка',
-              subtitle: 'Можно заполнить позже',
-              icon: Icons.local_shipping_outlined,
-              expanded: _showDelivery,
-              onToggle: () => setState(() => _showDelivery = !_showDelivery),
-              child: Column(
-                children: [
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      final actualField = TextField(
-                        controller: _shippingActualController,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: SpFinanceUi.inputDecoration(
-                          context,
-                          labelText: 'Оплачено СП',
-                          hintText: 'Себестоимость',
-                          suffixText: '₽',
-                        ),
-                      );
-                      final clientField = TextField(
-                        controller: _shippingClientController,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: SpFinanceUi.inputDecoration(
-                          context,
-                          labelText: 'Начислить участнику',
-                          hintText: 'К оплате',
-                          suffixText: '₽',
-                        ),
-                      );
-                      if (constraints.maxWidth < 400) {
-                        return Column(
+              const SizedBox(height: 12),
+              _AddItemOptionalSection(
+                key: const ValueKey('add-item-delivery-section'),
+                title: commerceText(context, 'Доставка'),
+                subtitle: commerceText(context, 'Можно заполнить позже'),
+                icon: Icons.local_shipping_outlined,
+                expanded: _showDelivery,
+                onToggle: () => setState(() => _showDelivery = !_showDelivery),
+                child: Column(
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final actualField = TextField(
+                          controller: _shippingActualController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: SpFinanceUi.inputDecoration(
+                            context,
+                            labelText: commerceText(context, 'Оплачено СП'),
+                            hintText: commerceText(context, 'Себестоимость'),
+                            suffixText: '₽',
+                          ),
+                        );
+                        final clientField = TextField(
+                          controller: _shippingClientController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: SpFinanceUi.inputDecoration(
+                            context,
+                            labelText: commerceText(
+                              context,
+                              'Начислить участнику',
+                            ),
+                            hintText: commerceText(context, 'К оплате'),
+                            suffixText: '₽',
+                          ),
+                        );
+                        if (constraints.maxWidth < 400) {
+                          return Column(
+                            children: [
+                              actualField,
+                              const SizedBox(height: 9),
+                              clientField,
+                            ],
+                          );
+                        }
+                        return Row(
                           children: [
-                            actualField,
-                            const SizedBox(height: 9),
-                            clientField,
+                            Expanded(child: actualField),
+                            const SizedBox(width: 9),
+                            Expanded(child: clientField),
                           ],
                         );
-                      }
-                      return Row(
-                        children: [
-                          Expanded(child: actualField),
-                          const SizedBox(width: 9),
-                          Expanded(child: clientField),
-                        ],
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 9),
-                  const _AddItemHelperLine(
-                    icon: Icons.info_outline_rounded,
-                    text:
+                      },
+                    ),
+                    const SizedBox(height: 9),
+                    _AddItemHelperLine(
+                      icon: Icons.info_outline_rounded,
+                      text: commerceText(
+                        context,
                         'Разница между начислением участнику и фактической оплатой попадёт в прибыль.',
-                  ),
-                ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4),
+            ],
+          ),
+          footer: FilledButton.icon(
+            key: const ValueKey('add-item-submit'),
+            onPressed: _isSaving ? null : _save,
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(52),
+              backgroundColor: context.brandPrimary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(17),
+              ),
+              textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
+                fontFamily: 'Gilroy',
+                fontSize: 15,
+                fontWeight: FontWeight.w900,
               ),
             ),
-            const SizedBox(height: 4),
-          ],
-        ),
-        footer: FilledButton.icon(
-          key: const ValueKey('add-item-submit'),
-          onPressed: _isSaving ? null : _save,
-          style: FilledButton.styleFrom(
-            minimumSize: const Size.fromHeight(52),
-            backgroundColor: context.brandPrimary,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(17),
-            ),
-            textStyle: const TextStyle(
-              fontFamily: 'Gilroy',
-              fontSize: 15,
-              fontWeight: FontWeight.w900,
-            ),
+            icon: _isSaving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.check_rounded),
+            label: Text(commerceText(context, 'Добавить товар')),
           ),
-          icon: _isSaving
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                )
-              : const Icon(Icons.check_rounded),
-          label: const Text('Добавить товар'),
         ),
       ),
     );
@@ -7677,14 +7833,20 @@ class _AddItemSheetState extends ConsumerState<_AddItemSheet> {
     if (title.isEmpty ||
         (!_useExistingCustomer && customerName.isEmpty) ||
         (_useExistingCustomer && _selectedCustomerId == null)) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Укажите клиента и товар')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(commerceText(context, 'Укажите клиента и товар')),
+        ),
+      );
       return;
     }
     if (quantity == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Количество должно быть больше 0')),
+        SnackBar(
+          content: Text(
+            commerceText(context, 'Количество должно быть больше 0'),
+          ),
+        ),
       );
       return;
     }
@@ -7737,6 +7899,15 @@ class _AddItemSheetState extends ConsumerState<_AddItemSheet> {
       if (!mounted) return;
       ref.invalidate(spV2CustomersProvider);
       Navigator.of(context).pop(true);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _spActionErrorMessage(context, error, action: 'сохранить товар'),
+          ),
+        ),
+      );
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -7801,38 +7972,25 @@ class _SpCustomerPickerSheetState extends State<_SpCustomerPickerSheet> {
     return SpFinanceModalSurface(
       key: const ValueKey('add-item-customer-picker-modal'),
       icon: Icons.people_alt_outlined,
-      title: 'Выбрать участника',
-      subtitle:
-          'Найдите клиента по имени, телефону или мессенджеру. Всего: ${widget.customers.length}.',
+      title: commerceText(context, 'Выбрать участника'),
+      subtitle: tr(
+        context,
+        ru: 'Найдите клиента по имени, телефону или мессенджеру. Всего: ${widget.customers.length}.',
+        zh: '按姓名、电话或即时通讯账号搜索客户，共${widget.customers.length}位。',
+      ),
       maxHeightFactor: 0.88,
       keyboardAware: true,
       body: Column(
         children: [
           const SizedBox(height: 14),
-          TextField(
+          AppSearchField(
             key: const ValueKey('add-item-customer-search'),
             controller: _searchController,
-            autofocus: true,
-            textInputAction: TextInputAction.search,
             onChanged: (value) => setState(() => _query = value),
-            decoration:
-                SpFinanceUi.inputDecoration(
-                  context,
-                  labelText: 'Поиск участника',
-                  hintText: 'Имя, телефон, Telegram, WeChat…',
-                  prefixIcon: Icons.search_rounded,
-                ).copyWith(
-                  suffixIcon: _query.isEmpty
-                      ? null
-                      : IconButton(
-                          tooltip: 'Очистить поиск',
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() => _query = '');
-                          },
-                          icon: const Icon(Icons.close_rounded),
-                        ),
-                ),
+            textInputAction: TextInputAction.search,
+            autofocus: true,
+            hintText: commerceText(context, 'Имя, телефон, Telegram, WeChat…'),
+            onClear: () => setState(() => _query = ''),
           ),
           const SizedBox(height: 12),
           Expanded(
@@ -7915,7 +8073,8 @@ class _SelectedAddItemCustomer extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      customer?.fullName ?? 'Выберите участника',
+                      customer?.fullName ??
+                          commerceText(context, 'Выберите участника'),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -7928,9 +8087,9 @@ class _SelectedAddItemCustomer extends StatelessWidget {
                     const SizedBox(height: 3),
                     Text(
                       customer == null
-                          ? 'Откроется список с поиском'
+                          ? commerceText(context, 'Откроется список с поиском')
                           : (_customerPrimaryContact(customer) ??
-                                'Участник выбран'),
+                                commerceText(context, 'Участник выбран')),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: SpFinanceUi.labelStyle,
@@ -7940,7 +8099,9 @@ class _SelectedAddItemCustomer extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Text(
-                customer == null ? 'Выбрать' : 'Изменить',
+                customer == null
+                    ? commerceText(context, 'Выбрать')
+                    : commerceText(context, 'Изменить'),
                 style: TextStyle(
                   color: context.brandPrimary,
                   fontFamily: 'Gilroy',
@@ -8004,7 +8165,7 @@ class _CustomerPickerTile extends StatelessWidget {
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: Text(
-                  _customerInitials(customer.fullName),
+                  _customerInitials(context, customer.fullName),
                   style: TextStyle(
                     color: context.brandPrimary,
                     fontFamily: 'Gilroy',
@@ -8075,8 +8236,8 @@ class _CustomerPickerEmptyState extends StatelessWidget {
               color: context.brandPrimary,
             ),
             const SizedBox(height: 10),
-            const Text(
-              'Участник не найден',
+            Text(
+              commerceText(context, 'Участник не найден'),
               style: TextStyle(
                 color: AppColors.textPrimary,
                 fontFamily: 'Gilroy',
@@ -8086,7 +8247,10 @@ class _CustomerPickerEmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Проверьте запрос или добавьте нового клиента.',
+              commerceText(
+                context,
+                'Проверьте запрос или добавьте нового клиента.',
+              ),
               textAlign: TextAlign.center,
               style: SpFinanceUi.labelStyle,
             ),
@@ -8123,14 +8287,14 @@ String? _customerPrimaryContact(SpV2Customer customer) {
   return null;
 }
 
-String _customerInitials(String name) {
+String _customerInitials(BuildContext context, String name) {
   final parts = name
       .trim()
       .split(RegExp(r'\s+'))
       .where((part) => part.isNotEmpty)
       .take(2)
       .toList(growable: false);
-  if (parts.isEmpty) return 'К';
+  if (parts.isEmpty) return commerceText(context, 'К');
   return parts.map((part) => part.substring(0, 1).toUpperCase()).join();
 }
 
@@ -8614,67 +8778,452 @@ class _EditItemSheetState extends ConsumerState<_EditItemSheet> {
     final autoTotal = _calculateAutoTotal();
     final customers = ref.watch(spV2CustomersProvider);
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () => FocusScope.of(context).unfocus(),
-      child: SafeArea(
-        bottom: false,
-        child: Container(
-          constraints: BoxConstraints(maxHeight: maxHeight),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-          ),
-          child: Column(
-            children: [
-              const SizedBox(height: 10),
-              Container(
-                width: 58,
-                height: 6,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE1E5ED),
-                  borderRadius: BorderRadius.circular(999),
+    return UnsavedFormGuard(
+      controllers: [
+        _titleController,
+        _quantityController,
+        _sourceUrlController,
+        _sellerInfoController,
+        _descriptionController,
+        _trackController,
+        _purchasePriceController,
+        _clientPriceController,
+        _weightController,
+        _shippingController,
+        _shippingActualController,
+        _expensesController,
+        _totalController,
+      ],
+      extraState:
+          '$_selectedCustomerId:${_pickedImages.length}:$_status:$_manualTotalEnabled',
+      isBusy: _isSaving,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: SafeArea(
+          bottom: false,
+          child: Container(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+            ),
+            child: Column(
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 58,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE1E5ED),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 14),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 18),
-                child: SpAnimatedHeroSurface(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
+                const SizedBox(height: 14),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 18),
+                  child: SpAnimatedHeroSurface(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.edit_note_rounded,
+                          color: Colors.white,
+                          size: 36,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                widget.item.title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontFamily: 'Gilroy',
+                                  fontSize: 21,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                widget.item.customer?.fullName ??
+                                    commerceText(context, 'Клиент не указан'),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xE6FFFFFF),
+                                  fontFamily: 'Gilroy',
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: ListView(
+                    padding: EdgeInsets.fromLTRB(18, 0, 18, 18 + bottomInset),
                     children: [
-                      const Icon(
-                        Icons.edit_note_rounded,
-                        color: Colors.white,
-                        size: 36,
+                      if (widget.purchase.currency == 'CNY' &&
+                          widget.purchase.purchaseRate <= 0) ...[
+                        SpInfoNotice(
+                          title: commerceText(
+                            context,
+                            'Курс юаня пока не указан',
+                          ),
+                          message: commerceText(
+                            context,
+                            'Суммы в юанях сохранятся, но рублёвый итог, оплаты и прибыль будут неполными до указания курса в карточке СП.',
+                          ),
+                          icon: Icons.currency_exchange_rounded,
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _ItemQuickAction(
+                            icon: Icons.shopping_cart_checkout_rounded,
+                            label: widget.item.isPurchased
+                                ? commerceText(context, 'Выкуплен')
+                                : commerceText(context, 'Отметить выкуп'),
+                            selected: widget.item.isPurchased,
+                            onTap: _togglePurchasedFromSheet,
+                          ),
+                          _ItemQuickAction(
+                            icon: Icons.payments_rounded,
+                            label: widget.item.isGoodsPaid
+                                ? commerceText(context, 'Товар оплачен')
+                                : commerceText(context, 'Оплатили товар'),
+                            selected: widget.item.isGoodsPaid,
+                            onTap: () =>
+                                _togglePaymentFromSheet('goods_payment'),
+                          ),
+                          _ItemQuickAction(
+                            icon: Icons.local_shipping_rounded,
+                            label: widget.item.isDeliveryPaid
+                                ? commerceText(context, 'Доставка оплачена')
+                                : commerceText(context, 'Оплатили доставку'),
+                            selected: widget.item.isDeliveryPaid,
+                            onTap: () =>
+                                _togglePaymentFromSheet('delivery_payment'),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              widget.item.title,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontFamily: 'Gilroy',
-                                fontSize: 21,
-                                fontWeight: FontWeight.w900,
+                      const SizedBox(height: 12),
+                      customers.when(
+                        loading: () =>
+                            _EditCustomerBlock(customer: widget.item.customer),
+                        error: (_, _) =>
+                            _EditCustomerBlock(customer: widget.item.customer),
+                        data: (items) => _EditItemCustomerSelect(
+                          customers: items,
+                          selectedCustomerId: _selectedCustomerId,
+                          fallbackCustomer: widget.item.customer,
+                          onChanged: (value) =>
+                              setState(() => _selectedCustomerId = value),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _titleController,
+                              textInputAction: TextInputAction.next,
+                              decoration: SpFinanceUi.inputDecoration(
+                                context,
+                                labelText: commerceText(context, 'Что купить'),
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              widget.item.customer?.fullName ??
-                                  'Клиент не указан',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Color(0xE6FFFFFF),
-                                fontFamily: 'Gilroy',
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
+                          ),
+                          const SizedBox(width: 10),
+                          SizedBox(
+                            width: 104,
+                            child: TextField(
+                              controller: _quantityController,
+                              keyboardType: TextInputType.number,
+                              textInputAction: TextInputAction.next,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              decoration: SpFinanceUi.inputDecoration(
+                                context,
+                                labelText: commerceText(context, 'Кол-во'),
+                                suffixText: commerceText(context, 'шт.'),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      _LinkTextField(
+                        controller: _sourceUrlController,
+                        labelText: commerceText(context, 'Ссылка на товар'),
+                      ),
+                      const SizedBox(height: 10),
+                      _StatusSelectTile(
+                        label: commerceText(
+                          context,
+                          SpV2ItemStatusInfo.labelFor(_status),
+                        ),
+                        onTap: _selectStatus,
+                      ),
+                      const SizedBox(height: 10),
+                      SpInfoNotice(
+                        title: commerceText(
+                          context,
+                          'Трек можно привязать позже',
+                        ),
+                        message: commerceText(
+                          context,
+                          'Если указать трек-номер, на странице «Треки и сборки» у этого трека появится информация о товаре СП и клиенте.',
+                        ),
+                        icon: Icons.local_shipping_rounded,
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _trackController,
+                        decoration: SpFinanceUi.inputDecoration(
+                          context,
+                          labelText: commerceText(context, 'Трек-номер'),
+                          hintText: commerceText(
+                            context,
+                            'Опционально, если товар уже привязан к складу',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      SpInfoNotice(
+                        title: commerceText(
+                          context,
+                          'Цена выкупа и цена клиента',
+                        ),
+                        message: widget.purchase.currency == 'CNY'
+                            ? commerceText(
+                                context,
+                                'Суммы здесь за 1 шт. в юанях. Для рублёвых итогов используется курс СП, а общий товарный долг считается с учётом количества.',
+                              )
+                            : commerceText(
+                                context,
+                                'Суммы здесь за 1 шт. в рублях. Общий товарный долг считается как цена клиента × количество.',
+                              ),
+                        icon: Icons.payments_rounded,
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _purchasePriceController,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              decoration: SpFinanceUi.inputDecoration(
+                                context,
+                                labelText: commerceText(
+                                  context,
+                                  'Выкуп за 1 шт.',
+                                ),
+                                suffixText: priceSuffix,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextField(
+                              controller: _clientPriceController,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              decoration: SpFinanceUi.inputDecoration(
+                                context,
+                                labelText: commerceText(
+                                  context,
+                                  'Клиент за 1 шт.',
+                                ),
+                                suffixText: priceSuffix,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      _ExistingItemImagesBlock(media: widget.item.media),
+                      const SizedBox(height: 10),
+                      _PickedImagesBlock(
+                        images: _pickedImages,
+                        onPick: _pickImages,
+                        onRemove: (index) =>
+                            setState(() => _pickedImages.removeAt(index)),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _sellerInfoController,
+                        minLines: 2,
+                        maxLines: 3,
+                        decoration: SpFinanceUi.inputDecoration(
+                          context,
+                          labelText: commerceText(
+                            context,
+                            'Данные продавца / параметры товара',
+                          ),
+                          hintText: commerceText(
+                            context,
+                            'Размер, цвет, модель, продавец, заметки из WeChat',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _descriptionController,
+                        minLines: 2,
+                        maxLines: 4,
+                        decoration: SpFinanceUi.inputDecoration(
+                          context,
+                          labelText: commerceText(context, 'Комментарий'),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _weightController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: SpFinanceUi.inputDecoration(
+                          context,
+                          labelText: commerceText(context, 'Фактический вес'),
+                          suffixText: commerceText(context, 'кг'),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _shippingActualController,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              decoration: SpFinanceUi.inputDecoration(
+                                context,
+                                labelText: commerceText(
+                                  context,
+                                  'Доставка оплачена СП',
+                                ),
+                                hintText: commerceText(
+                                  context,
+                                  'Себестоимость',
+                                ),
+                                suffixText: '₽',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextField(
+                              controller: _shippingController,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              decoration: SpFinanceUi.inputDecoration(
+                                context,
+                                labelText: commerceText(
+                                  context,
+                                  'Доставка клиенту',
+                                ),
+                                hintText: commerceText(
+                                  context,
+                                  'К оплате клиентом',
+                                ),
+                                suffixText: '₽',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      SpInfoNotice(
+                        title: commerceText(context, 'Доставка и доход'),
+                        message: commerceText(
+                          context,
+                          'Если доставка для клиента выше себестоимости, разница попадёт в расчётную прибыль организатора. Если наценки на товар нет, доход можно фиксировать именно здесь.',
+                        ),
+                        icon: Icons.receipt_long_rounded,
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _expensesController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: SpFinanceUi.inputDecoration(
+                          context,
+                          labelText: commerceText(context, 'Доп. расходы'),
+                          suffixText: '₽',
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _totalController,
+                        enabled: _manualTotalEnabled,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: SpFinanceUi.inputDecoration(
+                          context,
+                          labelText: _manualTotalEnabled
+                              ? commerceText(
+                                  context,
+                                  'Итого к оплате — ручная корректировка',
+                                )
+                              : commerceText(
+                                  context,
+                                  'Итого к оплате — авторасчёт',
+                                ),
+                          hintText: _formatRub(autoTotal),
+                          suffixText: '₽',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: SpFinanceUi.softDecoration(context),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                tr(
+                                  context,
+                                  ru: 'Авто: цена клиента × количество + доставка + доп. расходы = ${_formatRub(autoTotal)}',
+                                  zh: '自动：客户单价 × 数量 + 运费 + 额外费用 = ${_formatRub(autoTotal)}',
+                                ),
+                                style: SpFinanceUi.labelStyle,
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () => setState(() {
+                                _manualTotalEnabled = !_manualTotalEnabled;
+                                if (!_manualTotalEnabled) _syncAutoTotal();
+                              }),
+                              child: Text(
+                                _manualTotalEnabled
+                                    ? commerceText(context, 'Вернуть авто')
+                                    : commerceText(context, 'Скорректировать'),
                               ),
                             ),
                           ],
@@ -8683,347 +9232,46 @@ class _EditItemSheetState extends ConsumerState<_EditItemSheet> {
                     ],
                   ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: ListView(
-                  padding: EdgeInsets.fromLTRB(18, 0, 18, 18 + bottomInset),
-                  children: [
-                    if (widget.purchase.currency == 'CNY' &&
-                        widget.purchase.purchaseRate <= 0) ...[
-                      const SpInfoNotice(
-                        title: 'Курс юаня пока не указан',
-                        message:
-                            'Суммы в юанях сохранятся, но рублёвый итог, оплаты и прибыль будут неполными до указания курса в карточке СП.',
-                        icon: Icons.currency_exchange_rounded,
-                      ),
-                      const SizedBox(height: 10),
-                    ],
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        _ItemQuickAction(
-                          icon: Icons.shopping_cart_checkout_rounded,
-                          label: widget.item.isPurchased
-                              ? 'Выкуплен'
-                              : 'Отметить выкуп',
-                          selected: widget.item.isPurchased,
-                          onTap: _togglePurchasedFromSheet,
+                Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    18,
+                    10,
+                    18,
+                    18 + MediaQuery.paddingOf(context).bottom,
+                  ),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 54,
+                    child: ElevatedButton.icon(
+                      onPressed: _isSaving ? null : _save,
+                      icon: _isSaving
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.check_rounded),
+                      label: Text(commerceText(context, 'Сохранить')),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: context.brandPrimary,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
                         ),
-                        _ItemQuickAction(
-                          icon: Icons.payments_rounded,
-                          label: widget.item.isGoodsPaid
-                              ? 'Товар оплачен'
-                              : 'Оплатили товар',
-                          selected: widget.item.isGoodsPaid,
-                          onTap: () => _togglePaymentFromSheet('goods_payment'),
+                        textStyle: const TextStyle(
+                          fontFamily: 'Gilroy',
+                          fontSize: 16,
+                          fontWeight: FontWeight.w900,
                         ),
-                        _ItemQuickAction(
-                          icon: Icons.local_shipping_rounded,
-                          label: widget.item.isDeliveryPaid
-                              ? 'Доставка оплачена'
-                              : 'Оплатили доставку',
-                          selected: widget.item.isDeliveryPaid,
-                          onTap: () =>
-                              _togglePaymentFromSheet('delivery_payment'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    customers.when(
-                      loading: () =>
-                          _EditCustomerBlock(customer: widget.item.customer),
-                      error: (_, _) =>
-                          _EditCustomerBlock(customer: widget.item.customer),
-                      data: (items) => _EditItemCustomerSelect(
-                        customers: items,
-                        selectedCustomerId: _selectedCustomerId,
-                        fallbackCustomer: widget.item.customer,
-                        onChanged: (value) =>
-                            setState(() => _selectedCustomerId = value),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _titleController,
-                            textInputAction: TextInputAction.next,
-                            decoration: SpFinanceUi.inputDecoration(
-                              context,
-                              labelText: 'Что купить',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        SizedBox(
-                          width: 104,
-                          child: TextField(
-                            controller: _quantityController,
-                            keyboardType: TextInputType.number,
-                            textInputAction: TextInputAction.next,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
-                            ],
-                            decoration: SpFinanceUi.inputDecoration(
-                              context,
-                              labelText: 'Кол-во',
-                              suffixText: 'шт.',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    _LinkTextField(
-                      controller: _sourceUrlController,
-                      labelText: 'Ссылка на товар',
-                    ),
-                    const SizedBox(height: 10),
-                    _StatusSelectTile(
-                      label: SpV2ItemStatusInfo.labelFor(_status),
-                      onTap: _selectStatus,
-                    ),
-                    const SizedBox(height: 10),
-                    const SpInfoNotice(
-                      title: 'Трек можно привязать позже',
-                      message:
-                          'Если указать трек-номер, на странице «Треки и сборки» у этого трека появится информация о товаре СП и клиенте.',
-                      icon: Icons.local_shipping_rounded,
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _trackController,
-                      decoration: SpFinanceUi.inputDecoration(
-                        context,
-                        labelText: 'Трек-номер',
-                        hintText:
-                            'Опционально, если товар уже привязан к складу',
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    SpInfoNotice(
-                      title: 'Цена выкупа и цена клиента',
-                      message: widget.purchase.currency == 'CNY'
-                          ? 'Суммы здесь за 1 шт. в юанях. Для рублёвых итогов используется курс СП, а общий товарный долг считается с учётом количества.'
-                          : 'Суммы здесь за 1 шт. в рублях. Общий товарный долг считается как цена клиента × количество.',
-                      icon: Icons.payments_rounded,
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _purchasePriceController,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration: SpFinanceUi.inputDecoration(
-                              context,
-                              labelText: 'Выкуп за 1 шт.',
-                              suffixText: priceSuffix,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextField(
-                            controller: _clientPriceController,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration: SpFinanceUi.inputDecoration(
-                              context,
-                              labelText: 'Клиент за 1 шт.',
-                              suffixText: priceSuffix,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    _ExistingItemImagesBlock(media: widget.item.media),
-                    const SizedBox(height: 10),
-                    _PickedImagesBlock(
-                      images: _pickedImages,
-                      onPick: _pickImages,
-                      onRemove: (index) =>
-                          setState(() => _pickedImages.removeAt(index)),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _sellerInfoController,
-                      minLines: 2,
-                      maxLines: 3,
-                      decoration: SpFinanceUi.inputDecoration(
-                        context,
-                        labelText: 'Данные продавца / параметры товара',
-                        hintText:
-                            'Размер, цвет, модель, продавец, заметки из WeChat',
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _descriptionController,
-                      minLines: 2,
-                      maxLines: 4,
-                      decoration: SpFinanceUi.inputDecoration(
-                        context,
-                        labelText: 'Комментарий',
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _weightController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
-                      decoration: SpFinanceUi.inputDecoration(
-                        context,
-                        labelText: 'Фактический вес',
-                        suffixText: 'кг',
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _shippingActualController,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration: SpFinanceUi.inputDecoration(
-                              context,
-                              labelText: 'Доставка оплачена СП',
-                              hintText: 'Себестоимость',
-                              suffixText: '₽',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextField(
-                            controller: _shippingController,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration: SpFinanceUi.inputDecoration(
-                              context,
-                              labelText: 'Доставка клиенту',
-                              hintText: 'К оплате клиентом',
-                              suffixText: '₽',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    const SpInfoNotice(
-                      title: 'Доставка и доход',
-                      message:
-                          'Если доставка для клиента выше себестоимости, разница попадёт в расчётную прибыль организатора. Если наценки на товар нет, доход можно фиксировать именно здесь.',
-                      icon: Icons.receipt_long_rounded,
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _expensesController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
-                      decoration: SpFinanceUi.inputDecoration(
-                        context,
-                        labelText: 'Доп. расходы',
-                        suffixText: '₽',
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _totalController,
-                      enabled: _manualTotalEnabled,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
-                      decoration: SpFinanceUi.inputDecoration(
-                        context,
-                        labelText: _manualTotalEnabled
-                            ? 'Итого к оплате — ручная корректировка'
-                            : 'Итого к оплате — авторасчёт',
-                        hintText: _formatRub(autoTotal),
-                        suffixText: '₽',
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: SpFinanceUi.softDecoration(context),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Авто: цена клиента × количество + доставка + доп. расходы = ${_formatRub(autoTotal)}',
-                              style: SpFinanceUi.labelStyle,
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: () => setState(() {
-                              _manualTotalEnabled = !_manualTotalEnabled;
-                              if (!_manualTotalEnabled) _syncAutoTotal();
-                            }),
-                            child: Text(
-                              _manualTotalEnabled
-                                  ? 'Вернуть авто'
-                                  : 'Скорректировать',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: EdgeInsets.fromLTRB(
-                  18,
-                  10,
-                  18,
-                  18 + MediaQuery.paddingOf(context).bottom,
-                ),
-                child: SizedBox(
-                  width: double.infinity,
-                  height: 54,
-                  child: ElevatedButton.icon(
-                    onPressed: _isSaving ? null : _save,
-                    icon: _isSaving
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Icon(Icons.check_rounded),
-                    label: const Text('Сохранить'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: context.brandPrimary,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                      textStyle: const TextStyle(
-                        fontFamily: 'Gilroy',
-                        fontSize: 16,
-                        fontWeight: FontWeight.w900,
                       ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -9110,7 +9358,11 @@ class _EditItemSheetState extends ConsumerState<_EditItemSheet> {
     final quantity = _readPositiveInt(_quantityController.text);
     if (quantity == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Количество должно быть больше 0')),
+        SnackBar(
+          content: Text(
+            commerceText(context, 'Количество должно быть больше 0'),
+          ),
+        ),
       );
       return;
     }
@@ -9152,6 +9404,19 @@ class _EditItemSheetState extends ConsumerState<_EditItemSheet> {
       );
       if (!mounted) return;
       Navigator.of(context).pop(true);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _spActionErrorMessage(
+              context,
+              error,
+              action: 'сохранить изменения',
+            ),
+          ),
+        ),
+      );
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }

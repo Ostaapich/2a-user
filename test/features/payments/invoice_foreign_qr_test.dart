@@ -183,19 +183,19 @@ void main() {
           expect(find.text('TExampleWalletAddress'), findsOneWidget);
         }
         final confirm = find.ancestor(
-          of: find.text('Я оплатил'),
+          of: find.text('Приложить чек'),
           matching: find.byType(InkWell),
         );
-        expect(tester.widget<InkWell>(confirm).onTap, isNull);
-        final attach = find.text('Приложить чек (фото/PDF)');
+        expect(tester.widget<InkWell>(confirm).onTap, isNotNull);
+        final attach = find.text('Приложить чек');
         await tester.ensureVisible(attach);
         await tester.pumpAndSettle();
         await tester.tap(attach);
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Файлы'));
-        await tester.pumpAndSettle();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(find.text('Файлы').hitTestable(), findsOneWidget);
         expect(receipts.receivedPaymentId, isNull);
-        await tester.tap(find.text('Я оплатил'));
+        await tester.tap(find.text('Файлы'));
         await tester.pumpAndSettle();
         expect(receipts.receivedPaymentId, 77);
         expect(receipts.receivedName, 'proof.pdf');

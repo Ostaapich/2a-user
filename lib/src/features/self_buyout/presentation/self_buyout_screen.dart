@@ -30,6 +30,7 @@ class SelfBuyoutScreen extends ConsumerStatefulWidget {
 
 class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
   Timer? _verificationStatusTimer;
+  String _requestView = 'all';
 
   @override
   void initState() {
@@ -52,11 +53,12 @@ class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_requestView != 'action') {
+      _requestView = 'all';
+    }
     final requestsAsync = ref.watch(selfBuyoutRequestsProvider);
-    final availability = ref
-        .watch(selfBuyoutAvailabilityProvider)
-        .asData
-        ?.value;
+    final availabilityAsync = ref.watch(selfBuyoutAvailabilityProvider);
+    final availability = availabilityAsync.asData?.value;
     final operatorStatus = paymentOperatorStatusOrWorking(
       ref.watch(paymentOperatorStatusProvider),
     );
@@ -82,6 +84,28 @@ class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
           const PurchaseBlankPageHeader(title: 'Самовыкуп'),
           const SizedBox(height: 12),
           _hero(context, ref, availability, operatorStatus.sleeping),
+          if (availabilityAsync.hasError)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Column(
+                children: [
+                  Text(
+                    tr(
+                      context,
+                      ru: 'Не удалось проверить доступность самовыкупа. Это не означает запрет услуги.',
+                      zh: '无法确认自助代购是否可用，这不代表服务被禁止。',
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () =>
+                        ref.invalidate(selfBuyoutAvailabilityProvider),
+                    child: Text(
+                      tr(context, ru: 'Повторить проверку', zh: '重新检查'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           const SizedBox(height: 18),
           requestsAsync.when(
             data: (rows) => _list(context, ref, rows),
@@ -448,12 +472,84 @@ class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
         ),
       );
     }
+    final sorted = [...rows]
+      ..sort((a, b) {
+        bool needsAction(SelfBuyoutRequest r) =>
+            r.status == 'new' || r.status == 'awaiting_payment';
+        final priority = (needsAction(b) ? 1 : 0) - (needsAction(a) ? 1 : 0);
+        return priority != 0
+            ? priority
+            : (b.createdAt ?? DateTime(1970)).compareTo(
+                a.createdAt ?? DateTime(1970),
+              );
+      });
+    final visible = sorted
+        .where(
+          (r) => switch (_requestView) {
+            'action' => r.status == 'new' || r.status == 'awaiting_payment',
+            _ => true,
+          },
+        )
+        .toList(growable: false);
     return Column(
       children: [
-        for (final r in rows) ...[
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              for (final entry in [
+                ('action', tr(context, ru: 'Требуют действия', zh: '待处理')),
+                ('all', tr(context, ru: 'Все', zh: '全部')),
+              ])
+                ChoiceChip(
+                  label: Text(entry.$2),
+                  selected: _requestView == entry.$1,
+                  backgroundColor: Colors.white,
+                  selectedColor: context.brandPrimary,
+                  surfaceTintColor: Colors.transparent,
+                  checkmarkColor: Colors.white,
+                  showCheckmark: true,
+                  elevation: 0,
+                  pressElevation: 0,
+                  shape: const StadiumBorder(),
+                  side: BorderSide(
+                    color: _requestView == entry.$1
+                        ? context.brandPrimary
+                        : Colors.black.withValues(alpha: 0.06),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 11,
+                    vertical: 9,
+                  ),
+                  labelPadding: EdgeInsets.zero,
+                  labelStyle: TextStyle(
+                    color: _requestView == entry.$1
+                        ? Colors.white
+                        : AppColors.textPrimary,
+                    fontFamily: 'Gilroy',
+                    fontSize: 13,
+                    height: 1,
+                    fontWeight: FontWeight.w900,
+                  ),
+                  onSelected: (_) => setState(() => _requestView = entry.$1),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (visible.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Text(
+              tr(context, ru: 'В этом разделе заявок нет', zh: '此分类暂无申请'),
+            ),
+          ),
+        for (final r in visible) ...[
           _RequestCard(
             request: r,
-            trainingTarget: identical(r, rows.first),
+            trainingTarget: identical(r, visible.first),
             onTap: () => _onCardTap(context, ref, r),
           ),
           const SizedBox(height: 10),
@@ -586,8 +682,8 @@ class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
         content: Text(
           tr(
             context,
-            ru: 'Заявка исчезнет из списка. Это действие нельзя отменить.',
-            zh: '申请将从列表中消失，此操作无法撤销。',
+            ru: 'Заявка будет отменена и останется в истории. Восстановить отменённую заявку нельзя.',
+            zh: '申请将被取消并保留在历史记录中，取消后无法恢复。',
           ),
           style: const TextStyle(
             color: AppColors.textSecondary,
@@ -598,7 +694,7 @@ class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: Text(tr(context, ru: 'Оставить', zh: '保留')),
+            child: Text(tr(context, ru: 'Оставить заявку', zh: '保留申请')),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
@@ -606,7 +702,7 @@ class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
               backgroundColor: const Color(0xFFE53935),
               foregroundColor: Colors.white,
             ),
-            child: Text(tr(context, ru: 'Отменить', zh: '取消')),
+            child: Text(tr(context, ru: 'Отменить заявку', zh: '取消申请')),
           ),
         ],
       ),
@@ -657,7 +753,10 @@ class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
     WidgetRef ref,
     SelfBuyoutRequest r,
   ) async {
-    if (!await _ensurePaymentOperatorsWorking(context, ref)) return;
+    if (r.activePaymentId == null &&
+        !await _ensurePaymentOperatorsWorking(context, ref)) {
+      return;
+    }
     if (!context.mounted) return;
     final changed = await showBlurredModalBottomSheet<bool>(
       context: context,
@@ -670,6 +769,7 @@ class _SelfBuyoutScreenState extends ConsumerState<SelfBuyoutScreen> {
         requestId: r.id,
         requestNumber: r.requestNumber,
         cnyAmount: r.requestedCnyAmount,
+        hasExistingPayment: r.activePaymentId != null,
       ),
     );
     if (!context.mounted) return;
@@ -783,13 +883,13 @@ class _RequestCard extends StatelessWidget {
                   Expanded(
                     child: _kv(
                       tr(context, ru: 'Юани', zh: '人民币'),
-                      '${request.requestedCnyAmount.toStringAsFixed(2)} RMB',
+                      '${formatSelfBuyoutMoney(context, request.requestedCnyAmount)} RMB',
                     ),
                   ),
                   Expanded(
                     child: _kv(
                       tr(context, ru: 'К оплате', zh: '应付'),
-                      '${request.paymentRubAmount.toStringAsFixed(2)} ₽',
+                      '${formatSelfBuyoutMoney(context, request.paymentRubAmount)} ₽',
                     ),
                   ),
                 ],

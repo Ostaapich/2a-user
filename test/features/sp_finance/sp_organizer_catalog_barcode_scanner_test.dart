@@ -175,9 +175,24 @@ void main() {
     expect(scannerCalls, 1);
     expect(repository.queries.last, _barcode);
     final searchField = tester.widget<TextField>(
-      find.byKey(const Key('sp-catalog-search-field')),
+      find.descendant(
+        of: find.byKey(const Key('sp-catalog-search-field')),
+        matching: find.byType(TextField),
+      ),
     );
     expect(searchField.controller?.text, _barcode);
+    final beforeClear = repository.queries.length;
+    await tester.tap(find.byTooltip('Очистить поиск'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(searchField.controller?.text, '');
+    expect(repository.queries.last, '');
+    expect(repository.queries.length, beforeClear + 1);
+    expect(scannerCalls, 1);
+    expect(
+      find.byKey(const Key('sp-catalog-barcode-scan-button')),
+      findsOneWidget,
+    );
     expect(find.text('Параметры позиции'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

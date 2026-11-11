@@ -11,7 +11,8 @@ import 'package:twoalogisticcabineuser/src/core/ui/blurred_modal_bottom_sheet.da
 import '../../training/presentation/training_target.dart';
 import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/app_cached_media_image.dart';
-import '../../../core/ui/app_input_decoration.dart';
+import '../../../core/ui/app_search_field.dart';
+import '../../../core/utils/locale_text.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/help_dialog.dart';
 import '../../../core/ui/scroll_to_top_button.dart';
@@ -23,7 +24,6 @@ import '../domain/search_result.dart';
 import 'search_controller.dart';
 
 const _searchTextColor = Color(0xFF2F2F2F);
-const _searchMutedTextColor = Color(0x992F2F2F);
 
 BoxDecoration _searchCardDecoration({Color color = Colors.white}) {
   return BoxDecoration(
@@ -544,59 +544,14 @@ class _TrackSearchNoCodeScreenState
           Expanded(
             child: TrainingTarget(
               id: 'nocode.search',
-              child: TextField(
+              child: AppSearchField(
                 controller: _ctrl,
                 focusNode: _focusNode,
+                hasError: _validationMessage != null,
+                hintText: tr(context, ru: 'Поиск по трек-номеру', zh: '按运单号搜索'),
                 textInputAction: TextInputAction.search,
-                style: const TextStyle(
-                  color: _searchTextColor,
-                  fontFamily: 'Gilroy',
-                  fontSize: 15,
-                  height: 18 / 15,
-                  fontWeight: FontWeight.w700,
-                ),
-                decoration: appInputDecoration(
-                  context,
-                  prefixIcon: _focusNode.hasFocus
-                      ? null
-                      : Icon(
-                          Icons.search_rounded,
-                          color: context.brandPrimary,
-                          size: 22,
-                        ),
-                  suffixIcon: _ctrl.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(
-                            Icons.close_rounded,
-                            color: _searchMutedTextColor,
-                            size: 20,
-                          ),
-                          onPressed: _clearSearch,
-                        )
-                      : null,
-                  hintText: 'Поиск по трек-номеру',
-                  hintStyle: const TextStyle(
-                    fontFamily: 'Gilroy',
-                    fontSize: 14,
-                    height: 16 / 14,
-                    color: Color(0x662F2F2F),
-                    fontWeight: FontWeight.w600,
-                  ),
-                  fillColor: const Color(0xFFF8FAFC),
-                  borderColor: _validationMessage == null
-                      ? const Color(0xFFE1E5ED)
-                      : const Color(0xFFE53935),
-                  focusedBorderColor: _validationMessage == null
-                      ? context.brandPrimary
-                      : const Color(0xFFE53935),
-                  focusedWidth: 1.6,
-                  radius: 18,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 13,
-                  ),
-                ),
                 onChanged: (_) => setState(() => _validationMessage = null),
+                onClear: _clearSearch,
                 onSubmitted: (_) => _run(),
               ),
             ),

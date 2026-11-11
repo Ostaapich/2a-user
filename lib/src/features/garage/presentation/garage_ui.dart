@@ -28,7 +28,7 @@ class GaragePageHeader extends StatelessWidget {
             onTap: () {
               final navigator = Navigator.of(context);
               if (navigator.canPop()) {
-                navigator.pop();
+                navigator.maybePop();
               } else {
                 context.go(fallbackLocation);
               }

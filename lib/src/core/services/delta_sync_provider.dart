@@ -151,6 +151,8 @@ void _handleDeltaType(Ref ref, String type) {
     case 'invoices':
       if (_isShellBranchActive(ref, ShellBranchIndex.invoices)) {
         ref.invalidate(invoicesListProvider);
+        ref.invalidate(invoiceDirectoryPageProvider);
+        ref.invalidate(invoiceDirectoryProvider);
       }
       ref.invalidate(invoicesDigestProvider);
       ref.invalidate(invoicesCountProvider);
@@ -230,6 +232,8 @@ void _handleDeltaType(Ref ref, String type) {
 @visibleForTesting
 void invalidatePaymentTargetProviders(dynamic ref) {
   ref.invalidate(invoicesListProvider);
+  ref.invalidate(invoiceDirectoryPageProvider);
+  ref.invalidate(invoiceDirectoryProvider);
   ref.invalidate(invoicesDigestProvider);
   ref.invalidate(invoicesCountProvider);
   ref.invalidate(invoiceByIdProvider);
@@ -278,6 +282,8 @@ void _invalidateAllFor(dynamic ref) {
   ref.read(spAssembliesControllerProvider.notifier).refreshFromDelta();
   if (_isShellBranchActive(ref, ShellBranchIndex.invoices)) {
     ref.invalidate(invoicesListProvider);
+    ref.invalidate(invoiceDirectoryPageProvider);
+    ref.invalidate(invoiceDirectoryProvider);
   }
   ref.invalidate(invoicesDigestProvider);
   ref.invalidate(invoicesCountProvider);

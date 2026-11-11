@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -403,18 +404,14 @@ class _CustomersToolbar extends StatelessWidget {
       decoration: SpFinanceUi.cardDecoration(),
       child: Column(
         children: [
-          TextField(
+          AppSearchField(
             controller: controller,
             onChanged: onChanged,
             textInputAction: TextInputAction.search,
-            decoration: SpFinanceUi.inputDecoration(
+            hintText: tr(
               context,
-              hintText: tr(
-                context,
-                ru: 'Имя, телефон, email или мессенджер',
-                zh: '姓名、电话、邮箱或聊天账号',
-              ),
-              prefixIcon: Icons.search_rounded,
+              ru: 'Имя, телефон, email или мессенджер',
+              zh: '姓名、电话、邮箱或聊天账号',
             ),
           ),
           const SizedBox(height: 9),

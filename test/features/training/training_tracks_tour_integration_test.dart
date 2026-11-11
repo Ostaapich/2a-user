@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
+import 'package:twoalogisticcabineuser/src/features/tracks/presentation/widgets/track_sheet_surface.dart';
 import 'package:twoalogisticcabineuser/src/features/tracks/data/assemblies_provider.dart';
 import 'package:twoalogisticcabineuser/src/features/tracks/presentation/tracks_screen.dart';
 import 'package:twoalogisticcabineuser/src/features/training/data/assembly_training_session.dart';
@@ -21,6 +23,7 @@ class _Harness {
     WidgetTester tester,
     List<String> ids, {
     bool created = false,
+    String locale = 'ru',
   }) async {
     SharedPreferences.setMockInitialValues({});
     await tester.runAsync(() => initializeDateFormatting('ru'));
@@ -47,8 +50,8 @@ class _Harness {
       UncontrolledProviderScope(
         container: session.container,
         child: MaterialApp(
-          locale: const Locale('ru'),
-          supportedLocales: const [Locale('ru')],
+          locale: Locale(locale),
+          supportedLocales: const [Locale('ru'), Locale('zh')],
           localizationsDelegates: GlobalMaterialLocalizations.delegates,
           home: const Scaffold(body: TracksScreen()),
           builder: (context, child) => Stack(
@@ -57,7 +60,8 @@ class _Harness {
               Positioned.fill(
                 child: ListenableBuilder(
                   listenable: controller,
-                  builder: (context, _) => controller.currentId == null
+                  builder: (context, _) =>
+                      !controller.active || controller.currentId == null
                       ? const SizedBox.shrink()
                       : Overlay.wrap(
                           child: TrainingTourOverlay(
@@ -166,6 +170,160 @@ class _Harness {
 }
 
 void main() {
+  for (final locale in ['ru', 'zh']) {
+    testWidgets('real assembly wizard localized at320px $locale', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(320, 920);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final h = _Harness();
+      await h.pump(tester, ['assembly:0'], locale: locale);
+      h.controller.stop();
+      await h.tick(tester);
+      for (final code in assemblyTrainingTrackCodes.take(2)) {
+        final checkbox = find.descendant(
+          of: find.byKey(ValueKey('client-track-card-$code')),
+          matching: find.byKey(const ValueKey('client-track-selection')),
+        );
+        await tester.ensureVisible(checkbox);
+        await tester.tap(checkbox);
+        await h.tick(tester);
+      }
+      await h.tap(tester, 'assembly.submit');
+      expect(
+        find.text(locale == 'ru' ? '1. Тариф и страховка' : '1. 运价与保险'),
+        findsOneWidget,
+      );
+      expect(find.text(locale == 'ru' ? 'Далее' : '下一步'), findsOneWidget);
+      final requiredDescription = h.registry.contextFor(
+        'assembly.required.goods-description',
+      );
+      if (requiredDescription != null) {
+        final field = find.descendant(
+          of: find.byWidget(requiredDescription.widget),
+          matching: find.byType(TextField),
+        );
+        await tester.ensureVisible(field);
+        await tester.enterText(field, 'TRAINING GOODS');
+        tester.testTextInput.hide();
+        await h.tick(tester);
+      }
+      await tester.tap(find.text(locale == 'ru' ? 'Далее' : '下一步'));
+      await h.tick(tester);
+      expect(
+        find.text(locale == 'ru' ? '2. Описание товаров' : '2. 商品描述'),
+        findsOneWidget,
+      );
+      expect(
+        find.text(locale == 'ru' ? 'Есть хрупкие товары' : '包含易碎品'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+      expect(h.session.submittedPayload, isNull);
+      await h.finish(tester);
+    });
+  }
+
+  testWidgets(
+    'failed assembly note save keeps form and never publishes optimistic cache',
+    (tester) async {
+      final h = _Harness();
+      await h.pump(tester, ['assembly:0'], created: true);
+      h.controller.stop();
+      await h.tick(tester);
+      final switcher = h.registry.contextFor('tracks.view.switch-to-groups');
+      if (switcher != null) {
+        h.registry.activationFor('tracks.view.switch-to-groups', switcher)!();
+        await h.tick(tester);
+      }
+      await h.waitForTarget(tester, 'assembly.open');
+      await h.tap(tester, 'assembly.open');
+      final edit = find.text('Добавить комментарий');
+      await tester.ensureVisible(edit);
+      await tester.tap(edit);
+      await h.tick(tester);
+      Finder noteSurface() => find
+          .ancestor(
+            of: find.text('Заметка по сборке'),
+            matching: find.byWidgetPredicate(
+              (widget) => widget is TrackSheetSurface,
+            ),
+          )
+          .first;
+      Finder noteField() =>
+          find.descendant(of: noteSurface(), matching: find.byType(TextField));
+      await tester.enterText(noteField(), 'UNSAVED NOTE');
+      tester.testTextInput.hide();
+      await h.tick(tester);
+      await tester.tap(find.text('Сохранить заметку'));
+      await h.tick(tester);
+      expect(find.text('Заметка по сборке'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(noteField()).controller!.text,
+        'UNSAVED NOTE',
+      );
+      expect(
+        h.session.rejectedRequests,
+        contains('PATCH /assemblies/$assemblyTrainingAssemblyId'),
+      );
+      AppToast.hide();
+      await tester.tap(
+        find.descendant(of: noteSurface(), matching: find.text('Отмена')),
+      );
+      await h.tick(tester);
+      expect(find.text('Не сохранять изменения?'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(noteField()).controller!.text,
+        'UNSAVED NOTE',
+      );
+      await tester.tap(find.text('Не сохранять'));
+      await h.tick(tester);
+      await tester.tap(find.text('Добавить комментарий'));
+      await h.tick(tester);
+      expect(
+        tester.widget<TextField>(noteField()).controller!.text,
+        isNot('UNSAVED NOTE'),
+      );
+      await h.finish(tester);
+    },
+  );
+
+  testWidgets(
+    'failed quick delivery save keeps selected method and form available',
+    (tester) async {
+      final h = _Harness();
+      await h.pump(tester, ['assembly:0'], created: true);
+      h.controller.stop();
+      await h.tick(tester);
+      final switcher = h.registry.contextFor('tracks.view.switch-to-groups');
+      if (switcher != null) {
+        h.registry.activationFor('tracks.view.switch-to-groups', switcher)!();
+        await h.tick(tester);
+      }
+      final delivery = find.byKey(
+        const ValueKey('client-track-action-Доставка'),
+      );
+      await tester.ensureVisible(delivery);
+      await tester.tap(delivery);
+      await h.tick(tester);
+      await tester.tap(find.text('Самовывоз').last);
+      await h.tick(tester);
+      await tester.tap(find.text('Сохранить'));
+      await h.tick(tester);
+      expect(find.text('Способ получения'), findsOneWidget);
+      expect(find.text('Самовывоз'), findsNWidgets(2));
+      expect(
+        h.session.rejectedRequests,
+        contains('PATCH /assemblies/$assemblyTrainingAssemblyId'),
+      );
+      expect(tester.takeException(), isNull);
+      AppToast.hide();
+      await h.finish(tester);
+    },
+  );
+
   testWidgets('tour highlights then automatically opens the real add form', (
     tester,
   ) async {

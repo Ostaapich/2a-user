@@ -55,7 +55,17 @@ enum ScreenTranslationLiveBridge {
     let currentPresentation = UUID()
     presentationID = currentPresentation
     let credentials = ScreenLiveCredentials(endpoint: endpoint, token: token)
-    let model = ProbeModel()
+    // Match the content geometry to half the current scene, rather than a
+    // hard-coded landscape video. iOS still chooses the external PiP bounds.
+    let screenSize = scene.coordinateSpace.bounds.size
+    let safeArea = scene.windows.first(where: { $0.isKeyWindow })?.safeAreaInsets ?? .zero
+    guard let layout = HalfScreenPiPLayout(screenWidth: Double(screenSize.width), screenHeight: Double(screenSize.height),
+      safeAreaTop: Double(safeArea.top), safeAreaBottom: Double(safeArea.bottom)) else {
+      presentationID = nil
+      result(FlutterError(code: "UI_UNAVAILABLE", message: "Invalid screen geometry", details: nil)); return
+    }
+    let model = ProbeModel(halfScreenLayout: layout)
+    model.pip.progressLabel = appearance.language == "zh" ? "翻译中…" : "Переводим…"
     model.configureLive { credentials.makeClient() }
     model.onUnauthorized = { credentials.clear() }
     var host: UIHostingController<ScreenTranslationLiveView>?
@@ -255,7 +265,7 @@ private struct ScreenTranslationLiveView: View {
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("screenTranslationStatus")
                 }
                 ScreenTranslationLayerPreview(layer: model.pip.layer)
-                  .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                  .aspectRatio(model.pip.previewAspectRatio, contentMode: .fit)
                   .background(.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
                   .clipShape(RoundedRectangle(cornerRadius: 14)).id(ObjectIdentifier(model.pip))
               }
@@ -267,7 +277,7 @@ private struct ScreenTranslationLiveView: View {
                 instruction("arrow.up.forward.app", text("Откройте нужное приложение", "打开需要翻译的应用"),
                   text("После разрешения захвата окно перевода появится автоматически при выходе из 2A.", "允许屏幕捕获后，离开2A时会自动显示翻译窗口。"))
                 instruction("backward.end.fill", text("Управляйте переводом в окне", "在窗口中控制翻译"),
-                  text("Назад и вперёд — части экрана. Пауза фиксирует перевод.", "前进和后退可查看画面各区域，暂停可固定翻译。"))
+                  text("Переместите окно вверх или вниз — перевод переключится на противоположную половину. Пауза фиксирует перевод.", "将窗口移到上方或下方，翻译会切换到另一半画面。暂停可固定翻译。"))
               }
             }
 

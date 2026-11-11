@@ -1,3 +1,4 @@
+import '../../../core/services/analytics_service.dart';
 import 'package:flutter/material.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,6 +19,12 @@ class AddTracksScreen extends ConsumerStatefulWidget {
 }
 
 class _AddTracksScreenState extends ConsumerState<AddTracksScreen> {
+  @override
+  void initState() {
+    super.initState();
+    AnalyticsService.trackFunnel(WorkflowAction.trackAdd, WorkflowStage.viewed);
+  }
+
   final _ctrl = TextEditingController();
   AddTracksResult? _result;
   String? _error;

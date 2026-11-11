@@ -3,6 +3,8 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/ui/app_colors.dart';
+import '../../../../core/ui/app_search_field.dart';
+import '../../../../core/utils/locale_text.dart';
 
 class ShopSearchBar extends StatefulWidget {
   final ValueChanged<String> onSearch;
@@ -41,47 +43,37 @@ class _ShopSearchBarState extends State<ShopSearchBar> {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Container(
-        height: 44,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: TrainingTarget(
-          id: 'shop.search',
-          child: TextField(
-            controller: _controller,
-            textInputAction: TextInputAction.search,
-            onSubmitted: (_) => _submit(),
-            style: const TextStyle(fontSize: 15, color: AppColors.textPrimary),
-            decoration: InputDecoration(
-              hintText: 'Поиск товаров...',
-              hintStyle: TextStyle(fontSize: 15, color: Colors.grey.shade400),
-              prefixIcon: Icon(
-                CupertinoIcons.search,
-                size: 22,
-                color: Colors.grey.shade400,
+      child: Row(
+        children: [
+          Expanded(
+            child: TrainingTarget(
+              id: 'shop.search',
+              child: AppSearchField(
+                controller: _controller,
+                hintText: tr(context, ru: 'Поиск товаров...', zh: '搜索商品……'),
+                textInputAction: TextInputAction.search,
+                // Marketplace search remains explicit: typing/clearing never
+                // starts a request or submits a purchase.
+                onChanged: (_) {},
+                onSubmitted: (_) => _submit(),
               ),
-              suffixIcon: IconButton(
-                icon: Icon(
-                  CupertinoIcons.arrow_right_circle_fill,
-                  size: 24,
-                  color: context.brandPrimary,
-                ),
-                onPressed: _submit,
-              ),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(vertical: 12),
             ),
           ),
-        ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 48,
+            height: 48,
+            child: IconButton(
+              tooltip: tr(context, ru: 'Найти товары', zh: '搜索商品'),
+              onPressed: _submit,
+              icon: Icon(
+                CupertinoIcons.arrow_right_circle_fill,
+                size: 26,
+                color: context.brandPrimary,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -1,3 +1,4 @@
+import 'package:intl/intl.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_target.dart';
 import 'package:flutter/material.dart';
 
@@ -272,3 +273,11 @@ String selfBuyoutStatusLabel(BuildContext context, String status) {
       return status;
   }
 }
+
+String formatSelfBuyoutMoney(BuildContext context, num amount) =>
+    NumberFormat.decimalPatternDigits(
+      locale: Localizations.localeOf(context).languageCode == 'zh'
+          ? 'zh_CN'
+          : 'ru_RU',
+      decimalDigits: 2,
+    ).format(amount);

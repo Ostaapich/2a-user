@@ -283,10 +283,8 @@ class _NewsCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (item.imageUrl != null)
-                _NewsCoverImage(imageUrl: item.imageUrl!)
-              else
-                const _NewsPlaceholderCover(),
+              if (item.imageUrl?.isNotEmpty == true)
+                _NewsCoverImage(imageUrl: item.imageUrl!),
               Padding(
                 padding: const EdgeInsets.all(14),
                 child: Column(

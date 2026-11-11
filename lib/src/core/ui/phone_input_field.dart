@@ -13,6 +13,9 @@ class PhoneInputField extends StatelessWidget {
   final bool enabled;
   final TextInputAction? textInputAction;
 
+  /// Matches gradient-framed delivery fields; existing callers keep their style.
+  final bool gradientFrame;
+
   const PhoneInputField({
     super.key,
     this.controller,
@@ -22,6 +25,7 @@ class PhoneInputField extends StatelessWidget {
     this.onChanged,
     this.enabled = true,
     this.textInputAction,
+    this.gradientFrame = false,
   });
 
   static PhoneNumber? parse(String? phone) {
@@ -50,7 +54,7 @@ class PhoneInputField extends StatelessWidget {
     final maxCountrySheetSize = ((screenHeight - topInset - 24) / screenHeight)
         .clamp(0.78, 0.94 - 24 / screenHeight);
 
-    return Theme(
+    final field = Theme(
       data: theme.copyWith(
         colorScheme: theme.colorScheme.copyWith(primary: primary),
       ),
@@ -120,23 +124,40 @@ class PhoneInputField extends StatelessWidget {
             color: AppColors.textPrimary,
           ),
         ),
-        decoration: appInputDecoration(
-          context,
-          hintText: hintText,
-          hintStyle: const TextStyle(
-            color: Color(0xFF999999),
-            fontWeight: FontWeight.w500,
-          ),
-          fillColor: Colors.white,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 14,
-            vertical: 12,
-          ),
-          borderColor: const Color(0xFFE0E0E0),
-          focusedBorderColor: primary,
-          radius: kAppInputLargeRadius,
-          focusedWidth: 2,
-        ),
+        decoration: gradientFrame
+            ? InputDecoration(
+                hintText: hintText,
+                hintStyle: const TextStyle(
+                  fontSize: 14,
+                  color: Color(0xFF999999),
+                  fontWeight: FontWeight.w500,
+                ),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                prefixIconConstraints: const BoxConstraints(minHeight: 0),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+              )
+            : appInputDecoration(
+                context,
+                hintText: hintText,
+                hintStyle: const TextStyle(
+                  color: Color(0xFF999999),
+                  fontWeight: FontWeight.w500,
+                ),
+                fillColor: Colors.white,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                borderColor: const Color(0xFFE0E0E0),
+                focusedBorderColor: primary,
+                radius: kAppInputLargeRadius,
+                focusedWidth: 2,
+              ),
         enabled: enabled,
         textInputAction: textInputAction,
         onChanged: onChanged,
@@ -157,5 +178,6 @@ class PhoneInputField extends StatelessWidget {
               ),
       ),
     );
+    return gradientFrame ? AppGradientInputFrame(child: field) : field;
   }
 }

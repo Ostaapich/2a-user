@@ -193,3 +193,12 @@ This section records the original prototype. Its separate assembly exercise is s
 - Primary assembly/organizer tabs open automatically, then wait for Next. Explanations never advance automatically. The assembly exercise remains manual practice.
 - Cancel pending activation on step/route/access changes, hidden target, collapse, exit or disposal. Re-check context/access before executing. Manual opening wins over queued automatic opening. Limit each action to once per step, except tariff Back (up to three existing wizard pages).
 - The existing coach notice announces automatic activation. Collapsing pauses it; expanding can schedule it again. No alternate application view or duplicate business form is introduced.
+
+## Keyboard behavior (user correction, 2026-11-10)
+
+- All editable surfaces must keep the focused field visible above the native IME on Android and iOS, preserve entered text, and offer dismissal by touching outside the editor. Editor-owned controls use `TextFieldTapRegion` when focus must remain. Registration/recovery call verification through SMS.ru stays unchanged.
+- `AppKeyboardDismissRegion`, mounted above the navigator, owns the mobile outside-touch action and propagates keyboard visibility after a `Scaffold` consumes its physical inset. It adds no painted toolbar or overlay.
+- `AppScaffold` and `AppShell` resize their bodies for the IME. The floating mobile navigation is hidden while the IME is visible; `AppLayout.bottomBarObstruction` then contributes zero navigation obstruction. Standalone chat/manual-inset layouts retain one local owner and are verified separately.
+- `showBlurredModalBottomSheet` owns keyboard avoidance exactly once: reserve the physical keyboard outside the painted sheet, constrain the sheet to available height, and pass a zero consumed bottom inset to descendants. Bottom system safe area is reserved only with the keyboard closed. Legacy inner formulas can remain for standalone use; they must not duplicate route-owned keyboard spacing.
+- Forms use scrollable bodies with reachable headers/close actions and footers. Loading/error transitions must preserve the editor's state and focus rather than replacing the form. Avoid opaque spacer panels or navigation gaps above the IME.
+- Evidence and per-field coverage are recorded in `../outputs/2026-11-10-keyboard/`. Source inventory and widget platform simulations are distinct from native OS/device acceptance; uninstantiated private editor branches must be listed explicitly.

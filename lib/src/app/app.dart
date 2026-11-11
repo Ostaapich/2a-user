@@ -18,6 +18,7 @@ import '../core/services/delta_sync_provider.dart';
 import '../core/services/websocket_provider.dart';
 import '../core/ui/app_colors.dart';
 import '../core/ui/app_layout.dart';
+import '../core/ui/app_keyboard_dismiss.dart';
 import '../core/ui/app_toast.dart';
 import '../core/ui/app_update_gate.dart';
 import '../core/ui/demo_mode_banner.dart';
@@ -275,10 +276,12 @@ class _AppState extends ConsumerState<App> with WidgetsBindingObserver {
         final content = _CompactTextScale(
           child: child ?? const SizedBox.shrink(),
         );
-        return AppUpdateGate(
-          child: TrainingTourHost(
-            router: router,
-            child: Stack(children: [content, const DemoModeBanner()]),
+        return AppKeyboardDismissRegion(
+          child: AppUpdateGate(
+            child: TrainingTourHost(
+              router: router,
+              child: Stack(children: [content, const DemoModeBanner()]),
+            ),
           ),
         );
       },
@@ -298,7 +301,9 @@ class _CompactTextScale extends StatelessWidget {
     if (compactScale == 1.0) return child;
 
     final baseScale = media.textScaler.scale(14) / 14;
-    final effectiveScale = (baseScale * compactScale).clamp(0.82, 1.30);
+    // Preserve the user's accessibility scaler, including nonlinear scaling.
+    if (baseScale > 1.0) return child;
+    final effectiveScale = (baseScale * compactScale).clamp(0.82, 1.0);
 
     return MediaQuery(
       data: media.copyWith(textScaler: TextScaler.linear(effectiveScale)),

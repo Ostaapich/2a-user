@@ -1,5 +1,8 @@
 import 'package:twoalogisticcabineuser/src/core/branding/company_branding_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_keyboard_dismiss.dart';
+import '../keyboard/keyboard_form_probe.dart';
+import '../../helpers/keyboard_acceptance.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twoalogisticcabineuser/src/core/network/api_client.dart';
@@ -92,6 +95,46 @@ class _FakeRepository extends SpOrganizerRepository {
 }
 
 void main() {
+  setUpAll(loadKeyboardAcceptanceFonts);
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets('$platform fulfillment search actual modal320height', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 640);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            companyNameProvider.overrideWithValue('Partner Cargo'),
+            spOrganizerRepositoryProvider.overrideWithValue(_FakeRepository()),
+          ],
+          child: MaterialApp(
+            theme: ThemeData(platform: platform),
+            builder: (_, child) => AppKeyboardDismissRegion(child: child!),
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () => showSpOrganizerFulfillmentLinkSheet(
+                    context: context,
+                    purchaseId: 17,
+                    overview: _overview,
+                    capabilities: _capabilities,
+                  ),
+                  child: const Text('Связать'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Связать'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(await probeCurrentFormEditors(tester), 1);
+    });
+  }
+
   testWidgets('selector links an existing track at 320 px', (tester) async {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.binding.setSurfaceSize(const Size(320, 800));

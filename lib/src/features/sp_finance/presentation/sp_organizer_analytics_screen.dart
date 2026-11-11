@@ -70,6 +70,7 @@ class _SpOrganizerAnalyticsScreenState
               capabilitiesAsync.when(
                 loading: () => const _AnalyticsLoadingCard(),
                 error: (_, _) => _AnalyticsUnavailableCard(
+                  onRetry: _refresh,
                   title: tr(
                     context,
                     ru: 'Аналитика временно недоступна',
@@ -84,6 +85,7 @@ class _SpOrganizerAnalyticsScreenState
                 data: (capabilities) {
                   if (!capabilities.analytics) {
                     return _AnalyticsUnavailableCard(
+                      onRetry: _refresh,
                       title: tr(
                         context,
                         ru: 'Аналитика пока не включена',
@@ -91,8 +93,8 @@ class _SpOrganizerAnalyticsScreenState
                       ),
                       message: tr(
                         context,
-                        ru: 'Новый read-only экран выключен на сервере. Текущие СП не изменяются.',
-                        zh: '新的只读页面尚未在服务器启用，现有拼团不会改变。',
+                        ru: 'Аналитика пока недоступна для вашего аккаунта. Можно обновить доступность.',
+                        zh: '您的账户暂不能使用分析，可以刷新访问权限。',
                       ),
                     );
                   }
@@ -154,13 +156,17 @@ class _SpOrganizerAnalyticsScreenState
   }
 
   Future<void> _refresh() async {
-    final capabilities = ref
-        .read(spOrganizerCapabilitiesProvider)
-        .asData
-        ?.value;
-    if (capabilities?.analytics != true) return;
-    ref.invalidate(spOrganizerAnalyticsProvider(_filter));
-    await ref.read(spOrganizerAnalyticsProvider(_filter).future);
+    try {
+      ref.invalidate(spOrganizerCapabilitiesProvider);
+      final capabilities = await ref.read(
+        spOrganizerCapabilitiesProvider.future,
+      );
+      if (!mounted || !capabilities.analytics) return;
+      ref.invalidate(spOrganizerAnalyticsProvider(_filter));
+      await ref.read(spOrganizerAnalyticsProvider(_filter).future);
+    } catch (_) {
+      // Provider error state displays a retry without discarding current filters.
+    }
   }
 
   Future<void> _selectPeriod(String period) async {
@@ -1832,8 +1838,13 @@ class _AnalyticsLoadingCard extends StatelessWidget {
 class _AnalyticsUnavailableCard extends StatelessWidget {
   final String title;
   final String message;
+  final VoidCallback? onRetry;
 
-  const _AnalyticsUnavailableCard({required this.title, required this.message});
+  const _AnalyticsUnavailableCard({
+    required this.title,
+    required this.message,
+    this.onRetry,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1859,6 +1870,14 @@ class _AnalyticsUnavailableCard extends StatelessWidget {
             textAlign: TextAlign.center,
             style: SpFinanceUi.labelStyle,
           ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: Text(tr(context, ru: 'Повторить', zh: '重试')),
+            ),
+          ],
         ],
       ),
     );

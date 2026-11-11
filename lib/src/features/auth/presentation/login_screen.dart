@@ -1,3 +1,4 @@
+import '../../../core/services/analytics_service.dart';
 import 'dart:async';
 
 import 'package:dio/dio.dart';
@@ -44,6 +45,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   @override
   void initState() {
     super.initState();
+    AnalyticsService.trackFunnel(WorkflowAction.login, WorkflowStage.viewed);
+    AppToast.hide();
     _introController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 920),
@@ -56,6 +59,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     final detectedDomain = AgentDomainResolver.currentAgentDomain;
     if (detectedDomain != null) {
       _domainCtrl.text = detectedDomain;
+    } else {
+      unawaited(_restoreLastCompany());
     }
     _introController.forward();
     Future<void>.delayed(const Duration(seconds: 8), () {
@@ -67,6 +72,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       if (kIsWeb) return;
       _loadPasskeyAvailability();
     });
+  }
+
+  Future<void> _restoreLastCompany() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted || _domainCtrl.text.isNotEmpty) return;
+    _domainCtrl.text = prefs.getString('last_company_domain') ?? '';
   }
 
   @override
@@ -395,163 +406,169 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     final animationsEnabled =
         !(MediaQuery.maybeOf(context)?.disableAnimations ?? false);
 
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      resizeToAvoidBottomInset: false,
-      body: Stack(
-        children: [
-          const AppBackground(),
-          GestureDetector(
-            onTap: () => FocusScope.of(context).unfocus(),
-            child: SingleChildScrollView(
-              padding: EdgeInsets.fromLTRB(
-                24,
-                topPadding + 28,
-                24,
-                bottomPadding + keyboardInset + 24,
-              ),
-              child: AuthResponsiveContent(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _PremiumEntrance(
-                      animation: _introController,
-                      animationsEnabled: animationsEnabled,
-                      child: const AuthHeroHeader(
-                        icon: Icons.local_shipping_rounded,
-                        title: 'Вход в личный кабинет',
-                        subtitle:
-                            'Следите за грузами, сборками, счетами и фотоотчётами в одном защищённом кабинете.',
-                        trustItems: [
-                          AuthTrustItem(
-                            icon: Icons.photo_camera_rounded,
-                            label: 'Фотоотчёты',
-                          ),
-                          AuthTrustItem(
-                            icon: Icons.fact_check_rounded,
-                            label: 'Проверка товара',
-                          ),
-                          AuthTrustItem(
-                            icon: Icons.shopping_bag_rounded,
-                            label: 'Выкуп',
-                          ),
-                          AuthTrustItem(
-                            icon: Icons.assignment_return_rounded,
-                            label: 'Возвраты',
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-
-                    _PremiumEntrance(
-                      animation: _introController,
-                      delay: 0.14,
-                      animationsEnabled: animationsEnabled,
-                      child: _AmbientAuthCard(
-                        animation: _ambientController,
+    return AutofillGroup(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        resizeToAvoidBottomInset: false,
+        body: Stack(
+          children: [
+            const AppBackground(),
+            GestureDetector(
+              onTap: () => FocusScope.of(context).unfocus(),
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  24,
+                  topPadding + 28,
+                  24,
+                  bottomPadding + keyboardInset + 24,
+                ),
+                child: AuthResponsiveContent(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _PremiumEntrance(
+                        animation: _introController,
                         animationsEnabled: animationsEnabled,
-                        child: AuthFormCard(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 280),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                transitionBuilder: _verticalRevealTransition,
-                                child: _showPasswordLogin
-                                    ? _buildTextField(
-                                        key: const ValueKey(
-                                          'password-login-identifier',
+                        child: const AuthHeroHeader(
+                          icon: Icons.local_shipping_rounded,
+                          title: 'Вход в личный кабинет',
+                          subtitle:
+                              'Следите за грузами, сборками, счетами и фотоотчётами в одном защищённом кабинете.',
+                          trustItems: [
+                            AuthTrustItem(
+                              icon: Icons.photo_camera_rounded,
+                              label: 'Фотоотчёты',
+                            ),
+                            AuthTrustItem(
+                              icon: Icons.location_on_rounded,
+                              label: 'Отслеживание',
+                            ),
+                            AuthTrustItem(
+                              icon: Icons.account_balance_wallet_rounded,
+                              label: 'Alipay / WeChat Pay',
+                            ),
+                            AuthTrustItem(
+                              icon: Icons.shopping_bag_rounded,
+                              label: 'Выкуп',
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 28),
+
+                      _PremiumEntrance(
+                        animation: _introController,
+                        delay: 0.14,
+                        animationsEnabled: animationsEnabled,
+                        child: _AmbientAuthCard(
+                          animation: _ambientController,
+                          animationsEnabled: animationsEnabled,
+                          child: AuthFormCard(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 280),
+                                  switchInCurve: Curves.easeOutCubic,
+                                  switchOutCurve: Curves.easeInCubic,
+                                  transitionBuilder: _verticalRevealTransition,
+                                  child: _showPasswordLogin
+                                      ? _buildTextField(
+                                          key: const ValueKey(
+                                            'password-login-identifier',
+                                          ),
+                                          controller: _loginCtrl,
+                                          label: 'Email или телефон',
+                                          hint: 'user@example.com',
+                                          prefixIcon: Icons.person_rounded,
+                                          keyboardType:
+                                              TextInputType.emailAddress,
+                                        )
+                                      : const SizedBox.shrink(
+                                          key: ValueKey(
+                                            'passkey-login-identifier-hidden',
+                                          ),
                                         ),
-                                        controller: _loginCtrl,
-                                        label: 'Email или телефон',
-                                        hint: 'user@example.com',
-                                        prefixIcon: Icons.person_rounded,
-                                        keyboardType:
-                                            TextInputType.emailAddress,
-                                      )
-                                    : const SizedBox.shrink(
-                                        key: ValueKey(
-                                          'passkey-login-identifier-hidden',
-                                        ),
-                                      ),
-                              ),
-                              AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 280),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                transitionBuilder: _verticalRevealTransition,
-                                child:
-                                    !_showPasswordLogin &&
-                                        _passkeyAvailabilityChecked &&
-                                        _passkeyAvailable
-                                    ? _buildPasskeyActions()
-                                    : const SizedBox.shrink(
-                                        key: ValueKey('passkey-hidden'),
-                                      ),
-                              ),
-                              AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 360),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                transitionBuilder: _verticalRevealTransition,
-                                child: _showPasswordLogin
-                                    ? _buildPasswordFields(
-                                        partnerLinkActive: partnerLinkActive,
-                                      )
-                                    : const SizedBox(
-                                        key: ValueKey('password-fields-hidden'),
-                                        height: 12,
-                                      ),
-                              ),
-                              AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 260),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                transitionBuilder: _buttonSwapTransition,
-                                child: _showPasswordLogin
-                                    ? _buildPasswordSubmitButton()
-                                    : _buildPasswordRevealButton(),
-                              ),
-                              const SizedBox(height: 12),
-                              OutlinedButton.icon(
-                                onPressed: _isLoading
-                                    ? null
-                                    : () => context.push('/register'),
-                                style: AuthVisuals.outlinedButtonStyle(context),
-                                icon: const Icon(
-                                  Icons.person_add_alt_1_rounded,
                                 ),
-                                label: const Text(
-                                  'Зарегистрироваться',
-                                  maxLines: 1,
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 15,
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 280),
+                                  switchInCurve: Curves.easeOutCubic,
+                                  switchOutCurve: Curves.easeInCubic,
+                                  transitionBuilder: _verticalRevealTransition,
+                                  child:
+                                      !_showPasswordLogin &&
+                                          _passkeyAvailabilityChecked &&
+                                          _passkeyAvailable
+                                      ? _buildPasskeyActions()
+                                      : const SizedBox.shrink(
+                                          key: ValueKey('passkey-hidden'),
+                                        ),
+                                ),
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 360),
+                                  switchInCurve: Curves.easeOutCubic,
+                                  switchOutCurve: Curves.easeInCubic,
+                                  transitionBuilder: _verticalRevealTransition,
+                                  child: _showPasswordLogin
+                                      ? _buildPasswordFields(
+                                          partnerLinkActive: partnerLinkActive,
+                                        )
+                                      : const SizedBox(
+                                          key: ValueKey(
+                                            'password-fields-hidden',
+                                          ),
+                                          height: 12,
+                                        ),
+                                ),
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 260),
+                                  switchInCurve: Curves.easeOutCubic,
+                                  switchOutCurve: Curves.easeInCubic,
+                                  transitionBuilder: _buttonSwapTransition,
+                                  child: _showPasswordLogin
+                                      ? _buildPasswordSubmitButton()
+                                      : _buildPasswordRevealButton(),
+                                ),
+                                const SizedBox(height: 12),
+                                OutlinedButton.icon(
+                                  onPressed: _isLoading
+                                      ? null
+                                      : () => context.push('/register'),
+                                  style: AuthVisuals.outlinedButtonStyle(
+                                    context,
+                                  ),
+                                  icon: const Icon(
+                                    Icons.person_add_alt_1_rounded,
+                                  ),
+                                  label: const Text(
+                                    'Зарегистрироваться',
+                                    maxLines: 1,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 15,
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
 
-                    const SizedBox(height: 24),
-                    _PremiumEntrance(
-                      animation: _introController,
-                      delay: 0.28,
-                      animationsEnabled: animationsEnabled,
-                      child: const _PublicTariffsPreview(),
-                    ),
-                  ],
+                      const SizedBox(height: 24),
+                      _PremiumEntrance(
+                        animation: _introController,
+                        delay: 0.28,
+                        animationsEnabled: animationsEnabled,
+                        child: const _PublicTariffsPreview(),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -628,7 +645,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
           _buildTextField(
             controller: _domainCtrl,
             label: 'Домен партнёра',
-            hint: 'example-company',
+            hint: 'example-company.ru',
             prefixIcon: Icons.business_rounded,
             keyboardType: TextInputType.url,
           ),
@@ -643,6 +660,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
           textInputAction: TextInputAction.done,
           onSubmitted: (_) => _loginWithPassword(),
           suffixIcon: IconButton(
+            tooltip: tr(
+              context,
+              ru: _obscurePassword ? 'Показать пароль' : 'Скрыть пароль',
+              zh: _obscurePassword ? '显示密码' : '隐藏密码',
+            ),
             icon: Icon(
               _obscurePassword
                   ? Icons.visibility_off_rounded
@@ -791,6 +813,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
           ),
           child: TextField(
             controller: controller,
+            autofillHints: controller == _passwordCtrl
+                ? const [AutofillHints.password]
+                : controller == _loginCtrl
+                ? const [AutofillHints.username]
+                : null,
             keyboardType: keyboardType,
             obscureText: obscureText,
             inputFormatters: inputFormatters,

@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -135,20 +136,16 @@ class _SpOrganizerGarageImportSheetState
                         ),
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                AppSearchField(
                   key: const ValueKey('garage-import-search'),
                   controller: _searchController,
-                  textInputAction: TextInputAction.search,
                   onChanged: _onSearchChanged,
                   onSubmitted: (_) => _load(),
-                  decoration: SpFinanceUi.inputDecoration(
+                  textInputAction: TextInputAction.search,
+                  hintText: tr(
                     context,
-                    hintText: tr(
-                      context,
-                      ru: 'Заказ Garage, название, бренд или артикул',
-                      zh: 'Garage订单、名称、品牌或零件号',
-                    ),
-                    prefixIcon: Icons.search_rounded,
+                    ru: 'Заказ Garage, название, бренд или артикул',
+                    zh: 'Garage订单、名称、品牌或零件号',
                   ),
                 ),
                 const SizedBox(height: 12),

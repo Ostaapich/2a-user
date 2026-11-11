@@ -29,11 +29,18 @@ import '../../../core/ui/app_layout.dart';
 import '../../tracks/data/tracks_provider.dart';
 import '../../invoices/data/invoices_provider.dart';
 import '../../notifications/presentation/client_notification_preferences_section.dart';
+import '../../loyalty/presentation/client_loyalty_section.dart';
+import '../../loyalty/data/client_loyalty_provider.dart';
 import '../../clients/application/client_codes_controller.dart';
 import '../data/invoice_export_data.dart';
 import '../data/track_export_data.dart';
 import '../data/xlsx_image_embedder.dart';
 import '../data/profile_provider.dart';
+import 'verified_phone_change_sheet.dart';
+import '../../../core/utils/locale_text.dart';
+import '../../../core/ui/unsaved_changes_guard.dart';
+import '../../auth/data/auth_input_safety.dart';
+import '../../auth/data/auth_form_exit_guards.dart';
 
 void _showStyledSnackBar(
   BuildContext context,
@@ -100,7 +107,8 @@ String _profileInitials(String fullName) {
 }
 
 class _ProfilePageHeader extends StatelessWidget {
-  const _ProfilePageHeader();
+  const _ProfilePageHeader({this.onBack});
+  final VoidCallback? onBack;
 
   @override
   Widget build(BuildContext context) {
@@ -111,6 +119,10 @@ class _ProfilePageHeader extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
           child: InkWell(
             onTap: () {
+              if (onBack != null) {
+                onBack!();
+                return;
+              }
               if (context.canPop()) {
                 context.pop();
               } else {
@@ -356,7 +368,22 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   final GlobalKey _logoutKey = GlobalKey();
 
   // Editing state
+  late final AuthFormExitGuards _exitGuards;
+  bool _confirmingExit = false;
   bool _isEditing = false;
+  String _originalName = '', _originalEmail = '';
+  ClientTerminal? _originalTerminal;
+  bool get _hasUnsavedChanges =>
+      (_isEditing &&
+          (_fullNameController.text != _originalName ||
+              _emailController.text != _originalEmail ||
+              _selectedTerminal != _originalTerminal)) ||
+      (_isChangingPassword &&
+          [
+            _currentPasswordController,
+            _newPasswordController,
+            _confirmPasswordController,
+          ].any((c) => c.text.isNotEmpty));
   bool _isSaving = false;
   bool _isExportingTracks = false;
   int _trackExportProcessed = 0;
@@ -385,6 +412,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   @override
   void initState() {
     super.initState();
+    _exitGuards = ref.read(authFormExitGuardsProvider)
+      ..profile = _confirmProfileExit;
+    for (final c in [
+      _fullNameController,
+      _emailController,
+      _currentPasswordController,
+      _newPasswordController,
+      _confirmPasswordController,
+    ]) {
+      c.addListener(_refreshDraftState);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       unawaited(_loadPasskeyState());
@@ -393,6 +431,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   @override
   void dispose() {
+    if (_exitGuards.profile == _confirmProfileExit) _exitGuards.profile = null;
     _scrollController.dispose();
     _fullNameController.dispose();
     _phoneController.dispose();
@@ -412,6 +451,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
     Future<void> onRefresh() async {
       ref.invalidate(clientProfileProvider);
+      ref.invalidate(clientLoyaltyProvider);
       await ref.read(clientProfileProvider.future);
     }
 
@@ -476,6 +516,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 color: context.brandPrimary,
                 child: ListView(
                   controller: _scrollController,
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: EdgeInsets.fromLTRB(
                     16,
@@ -484,7 +526,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     bottomPad + 16,
                   ),
                   children: [
-                    const _ProfilePageHeader(),
+                    _ProfilePageHeader(onBack: _leaveProfile),
                     const SizedBox(height: 12),
                     _ProfileHeroCard(profile: profile),
                     const SizedBox(height: 14),
@@ -501,6 +543,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     const SizedBox(height: 15),
 
                     // Client push preferences
+                    const ClientLoyaltySection(),
                     const ClientNotificationPreferencesSection(),
                     const SizedBox(height: 15),
 
@@ -654,9 +697,57 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     );
   }
 
+  void _refreshDraftState() {
+    if (mounted) setState(() {});
+  }
+
+  Future<bool> _confirmProfileExit() async {
+    if (_isSaving || _isSavingPassword || _confirmingExit) return false;
+    if (!_hasUnsavedChanges) return true;
+    _confirmingExit = true;
+    try {
+      return await confirmDiscardChanges(context);
+    } finally {
+      _confirmingExit = false;
+    }
+  }
+
+  void _leaveProfile() {
+    if (context.canPop()) {
+      context.pop();
+    } else {
+      context.go('/');
+    }
+  }
+
+  Future<void> _changePhone() async {
+    final changed = await showBlurredModalBottomSheet<bool>(
+      context: context,
+      useRootNavigator: true,
+      isScrollControlled: true,
+      isDismissible: false,
+      enableDrag: false,
+      useSafeArea: true,
+      builder: (_) => const VerifiedPhoneChangeSheet(),
+    );
+    if (!mounted || changed != true) return;
+    ref.invalidate(clientProfileProvider);
+    _showStyledSnackBar(
+      context,
+      tr(
+        context,
+        ru: 'Номер телефона подтверждён и обновлён',
+        zh: '电话号码已验证并更新',
+      ),
+    );
+  }
+
   void _startEditing(ClientProfile profile) {
     setState(() {
       _isEditing = true;
+      _originalName = profile.fullName;
+      _originalEmail = profile.email;
+      _originalTerminal = profile.terminal;
       _fullNameController.text = profile.fullName;
       _phoneController.text = profile.phone ?? '';
       _emailController.text = profile.email;
@@ -664,7 +755,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     });
   }
 
-  void _cancelEditing() {
+  Future<void> _cancelEditing() async {
+    if (_isSaving) return;
+    if (_hasUnsavedChanges && !await confirmDiscardChanges(context)) return;
+    if (!mounted) return;
     setState(() {
       _isEditing = false;
     });
@@ -672,10 +766,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   Future<void> _saveProfile() async {
     final fullName = _fullNameController.text.trim();
-    final phone = _phoneController.text.trim();
     final email = _emailController.text.trim();
 
-    if (fullName.isEmpty) {
+    if (!isValidAuthEmail(email)) {
+      _showStyledSnackBar(
+        context,
+        tr(context, ru: 'Введите корректный email', zh: '请输入有效的邮箱地址'),
+        isError: true,
+      );
+      return;
+    }
+    if (fullName.length < 2) {
       _showStyledSnackBar(context, 'Введите ФИО', isError: true);
       return;
     }
@@ -687,12 +788,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           .read(profileRepositoryProvider)
           .updateProfile(
             fullName: fullName,
-            phone: phone,
             email: email,
             terminal: _selectedTerminal,
             clearTerminal: _selectedTerminal == null,
           );
 
+      if (!mounted) return;
       ref.invalidate(clientProfileProvider);
 
       if (mounted) {
@@ -803,11 +904,20 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               icon: Icons.person_outline_rounded,
             ),
             const SizedBox(height: 12),
-            _buildEditableField(
-              controller: _phoneController,
-              label: 'Телефон',
-              icon: Icons.phone_outlined,
-              keyboardType: TextInputType.phone,
+            _buildReadonlyField(
+              label: tr(
+                context,
+                ru: 'Телефон для восстановления',
+                zh: '账户恢复电话',
+              ),
+              value: profile.phone ?? '—',
+            ),
+            TextButton.icon(
+              onPressed: _isSaving ? null : _changePhone,
+              icon: const Icon(Icons.verified_user_outlined),
+              label: Text(
+                tr(context, ru: 'Изменить и подтвердить номер', zh: '更改并验证号码'),
+              ),
             ),
             const SizedBox(height: 12),
             _buildEditableField(
@@ -878,14 +988,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               Expanded(child: Text('Личные данные', style: _sectionTitleStyle)),
               TrainingTarget(
                 id: 'profile.edit',
-                child: IconButton(
+                child: TextButton.icon(
                   onPressed: () => _startEditing(profile),
                   icon: Icon(
                     Icons.edit_outlined,
                     size: 20,
                     color: context.brandPrimary,
                   ),
-                  tooltip: 'Редактировать',
+                  label: Text(tr(context, ru: 'Изменить', zh: '编辑')),
                 ),
               ),
             ],
@@ -918,6 +1028,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
+      textInputAction: keyboardType == TextInputType.emailAddress
+          ? TextInputAction.done
+          : TextInputAction.next,
       decoration: appInputDecoration(
         context,
         labelText: label,
@@ -1210,11 +1323,19 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     return TextField(
       controller: controller,
       obscureText: obscure,
+      textInputAction: controller == _confirmPasswordController
+          ? TextInputAction.done
+          : TextInputAction.next,
       decoration: appInputDecoration(
         context,
         labelText: label,
         prefixIcon: const Icon(Icons.lock_outline, size: 20),
         suffixIcon: IconButton(
+          tooltip: tr(
+            context,
+            ru: obscure ? 'Показать пароль' : 'Скрыть пароль',
+            zh: obscure ? '显示密码' : '隐藏密码',
+          ),
           icon: Icon(
             obscure ? Icons.visibility_off_outlined : Icons.visibility_outlined,
             size: 20,
@@ -1963,7 +2084,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           ),
           const SizedBox(width: 10),
           const Icon(
-            Icons.lock_outline_rounded,
+            Icons.info_outline_rounded,
             size: 18,
             color: AppColors.textSecondary,
           ),
@@ -2133,7 +2254,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       }
     } catch (e) {
       if (mounted) {
-        _showStyledSnackBar(context, 'Ошибка экспорта: $e', isError: true);
+        _showStyledSnackBar(
+          context,
+          tr(
+            context,
+            ru: 'Не удалось выгрузить все счета. Проверьте соединение и повторите экспорт.',
+            zh: '无法导出全部账单，请检查网络连接后重试。',
+          ),
+          isError: true,
+        );
       }
     }
   }

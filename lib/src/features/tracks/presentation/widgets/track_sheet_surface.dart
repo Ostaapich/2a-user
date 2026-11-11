@@ -15,6 +15,7 @@ class TrackSheetSurface extends StatelessWidget {
   final bool keyboardAware;
   final ScrollController? scrollController;
   final bool useMaxHeight;
+  final bool showHandle;
 
   const TrackSheetSurface({
     super.key,
@@ -28,6 +29,7 @@ class TrackSheetSurface extends StatelessWidget {
     this.keyboardAware = false,
     this.scrollController,
     this.useMaxHeight = false,
+    this.showHandle = true,
   });
 
   @override
@@ -66,15 +68,21 @@ class TrackSheetSurface extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Center(
-                    child: TrainingTarget(
-                      id: 'track.sheet.dismiss-handle',
-                      onActivate: () => Navigator.of(context).pop(),
-                      child: const SizedBox(width: 42, child: SheetHandle()),
+                  if (showHandle)
+                    Center(
+                      child: TrainingTarget(
+                        id: 'track.sheet.dismiss-handle',
+                        onActivate: () => Navigator.of(context).pop(),
+                        child: const SizedBox(width: 42, child: SheetHandle()),
+                      ),
                     ),
-                  ),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                    padding: EdgeInsets.fromLTRB(
+                      16,
+                      showHandle ? 0 : 16,
+                      16,
+                      14,
+                    ),
                     child: _TrackSheetHeader(
                       icon: icon,
                       title: title,
@@ -95,14 +103,17 @@ class TrackSheetSurface extends StatelessWidget {
                     ),
                   ),
                   if (footer != null)
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        16,
-                        0,
-                        16,
-                        12 + bottomPadding,
+                    ColoredBox(
+                      color: Colors.white,
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          16,
+                          12,
+                          16,
+                          12 + bottomPadding,
+                        ),
+                        child: footer,
                       ),
-                      child: footer,
                     ),
                 ],
               ),
@@ -200,6 +211,7 @@ class TrackSheetOptionTile extends StatelessWidget {
   final bool selected;
   final VoidCallback? onTap;
   final int titleMaxLines;
+  final bool radioIndicator;
 
   const TrackSheetOptionTile({
     super.key,
@@ -209,6 +221,7 @@ class TrackSheetOptionTile extends StatelessWidget {
     required this.selected,
     required this.onTap,
     this.titleMaxLines = 1,
+    this.radioIndicator = false,
   });
 
   @override
@@ -293,7 +306,7 @@ class TrackSheetOptionTile extends StatelessWidget {
                 height: 28,
                 decoration: BoxDecoration(
                   color: selected ? accent : Colors.white,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(radioIndicator ? 14 : 10),
                   border: Border.all(
                     color: selected
                         ? accent
@@ -301,10 +314,10 @@ class TrackSheetOptionTile extends StatelessWidget {
                   ),
                 ),
                 child: selected
-                    ? const Icon(
-                        Icons.check_rounded,
+                    ? Icon(
+                        radioIndicator ? Icons.circle : Icons.check_rounded,
                         color: Colors.white,
-                        size: 18,
+                        size: radioIndicator ? 12 : 18,
                       )
                     : null,
               ),

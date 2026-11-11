@@ -1,4 +1,6 @@
 import 'package:dio/dio.dart';
+import 'dart:convert';
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -26,6 +28,11 @@ import 'package:twoalogisticcabineuser/src/features/sp_finance/presentation/sp_v
 import 'package:twoalogisticcabineuser/src/features/sp_finance/presentation/sp_v2_purchase_detail_screen.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_target.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_tour_steps.dart';
+
+class _WarehouseRecognizer implements WarehouseScreenshotTextRecognizer {
+  @override
+  Future<String> recognize(String path) async => 'TEST 测试仓库 123';
+}
 
 Finder anchor(String id) =>
     find.byWidgetPredicate((w) => w is TrainingTarget && w.id == id);
@@ -257,6 +264,13 @@ void main() {
                         clientCode: 'TEST',
                         address: '测试仓库',
                         phone: '123',
+                      ),
+                      recognizer: _WarehouseRecognizer(),
+                      screenshotPicker: () async => XFile.fromData(
+                        base64Decode(
+                          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+                        ),
+                        name: 'fixture.png',
                       ),
                     ),
                     child: const Text('Проверить заполнение'),

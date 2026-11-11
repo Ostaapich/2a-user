@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:typed_data';
 
@@ -29,8 +30,8 @@ HttpClientAdapter wrapMediaHttpAdapter(HttpClientAdapter adapter) =>
     StrictMediaBrowserAdapter(adapter);
 
 /// Dio's XHR adapter follows redirects even when followRedirects is false.
-/// Only protected media uses Fetch's mandatory redirect:error policy; other
-/// API requests retain their existing adapter and interceptors unchanged.
+/// Protected media and the exact bounded workflow POST use Fetch's mandatory
+/// redirect:error policy. Other API requests keep their existing adapter.
 class StrictMediaBrowserAdapter implements HttpClientAdapter {
   StrictMediaBrowserAdapter(this.delegate);
   final HttpClientAdapter delegate;
@@ -43,10 +44,25 @@ class StrictMediaBrowserAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
-    if (options.extra['private_media_no_redirect'] != true) {
+    final workflow = options.extra['workflow_no_redirect'] == true;
+    if (options.extra['private_media_no_redirect'] != true && !workflow) {
       return delegate.fetch(options, requestStream, cancelFuture);
     }
-    if (_closed || options.method != 'GET' || requestStream != null) {
+    final allowedWorkflow =
+        workflow &&
+        options.method == 'POST' &&
+        const {
+          '/api/client/workflow-events',
+          '/client/workflow-events',
+          '/api/public/workflow-events',
+          '/public/workflow-events',
+        }.contains(options.uri.path) &&
+        !options.uri.hasQuery &&
+        !options.uri.hasFragment;
+    if (_closed ||
+        (workflow
+            ? !allowedWorkflow
+            : options.method != 'GET' || requestStream != null)) {
       throw DioException(
         requestOptions: options,
         type: DioExceptionType.cancel,
@@ -71,9 +87,23 @@ class StrictMediaBrowserAdapter implements HttpClientAdapter {
         for (final entry in options.headers.entries)
           entry.key: entry.value.toString(),
       };
+      String? body;
+      if (workflow) {
+        final bytes = <int>[];
+        if (requestStream != null) {
+          await for (final chunk in requestStream) {
+            if (bytes.length + chunk.length > 16384) {
+              throw const FormatException('Workflow request too large');
+            }
+            bytes.addAll(chunk);
+          }
+        }
+        body = utf8.decode(bytes);
+      }
       final init =
           <String, Object>{
-                'method': 'GET',
+                'method': workflow ? 'POST' : 'GET',
+                if (body != null) 'body': body,
                 'headers': headers,
                 'redirect': 'error',
                 'credentials': 'omit',

@@ -1,4 +1,6 @@
 import 'package:twoalogisticcabineuser/src/core/media/authenticated_media.dart';
+import 'home_payment_attention.dart';
+
 import 'dart:async';
 
 import 'package:flutter/cupertino.dart';
@@ -13,7 +15,6 @@ import 'package:intl/intl.dart';
 import '../../../core/branding/company_branding_provider.dart';
 import '../../../core/cache/stale_data_cache.dart';
 import '../../../core/network/api_config.dart';
-import '../../../core/services/showcase_service.dart';
 import '../../../core/ui/app_cached_media_image.dart';
 import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/app_layout.dart';
@@ -23,7 +24,15 @@ import '../../../core/utils/locale_text.dart';
 import '../../assemblies/data/assemblies_provider.dart';
 import '../../assemblies/domain/assembly_item.dart';
 import '../../auth/data/auth_provider.dart';
+import '../../rules/data/client_terms_provider.dart';
+import '../../rules/domain/client_terms_snapshot.dart';
+import '../../rules/presentation/terms_document_sheet.dart';
+import '../../rules/domain/terms_identity.dart';
+import '../../shell/application/shell_branch_provider.dart';
+import '../../news/data/news_provider.dart';
 import '../../clients/application/client_codes_controller.dart';
+import '../../clients/presentation/client_switcher_sheet.dart';
+import '../../../core/ui/blurred_modal_bottom_sheet.dart';
 import '../../invoices/data/invoices_provider.dart';
 import '../../invoices/domain/invoice_item.dart';
 import '../../invoices/presentation/invoices_screen.dart';
@@ -64,7 +73,10 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   // Флаг для показа диалога принятия правил
-  bool _termsDialogShown = false;
+  bool _termsCheckRunning = false;
+  bool _termsCheckScheduled = false;
+  bool _termsCheckQueued = false;
+  bool _termsRetryAvailable = false;
 
   final GlobalKey _quickCardsKey = GlobalKey();
   final GlobalKey _digestKey = GlobalKey();
@@ -72,33 +84,138 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _checkAndShowTermsDialog();
+    _checkAndShowTermsDialog(refreshRules: true);
   }
 
-  /// Проверить и показать диалог принятия правил если нужно
-  void _checkAndShowTermsDialog() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _termsDialogShown) return;
+  bool get _canPresentTerms {
+    if (ref.read(activeShellBranchIndexProvider) != ShellBranchIndex.home) {
+      return false;
+    }
+    var current = ModalRoute.of(context)?.isCurrent ?? true;
+    context.visitAncestorElements((element) {
+      if (element.widget is Navigator) {
+        final outerRoute = ModalRoute.of(element);
+        if (outerRoute != null && !outerRoute.isCurrent) current = false;
+      }
+      return current;
+    });
+    return current;
+  }
 
-      final showcaseService = ref.read(showcaseServiceProvider);
-      // Показываем диалог только если пользователь еще не принял правила
-      if (!showcaseService.hasAcceptedTerms) {
-        _termsDialogShown = true;
-        _showTermsDialog();
+  /// Rechecks when identity/agent become ready, when home becomes active, and
+  /// on explicit retry/refresh. Never interrupt an already open customer form.
+  void _checkAndShowTermsDialog({bool refreshRules = false}) {
+    if (_termsCheckRunning) {
+      _termsCheckQueued = true;
+      return;
+    }
+    if (_termsCheckScheduled) return;
+    _termsCheckScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      _termsCheckScheduled = false;
+      if (!mounted || _termsCheckRunning) return;
+      final auth = ref.read(authProvider);
+      final agentId = ref.read(clientAgentIdProvider);
+      if (!auth.isLoggedIn ||
+          auth.isLoading ||
+          auth.clientId == null ||
+          agentId == null) {
+        return;
+      }
+      if (ref.read(activeShellBranchIndexProvider) != ShellBranchIndex.home) {
+        return;
+      }
+      if (!_canPresentTerms) {
+        setState(() => _termsRetryAvailable = true);
+        return;
+      }
+      _termsCheckRunning = true;
+      try {
+        if (refreshRules) ref.invalidate(clientTermsSnapshotProvider);
+        final snapshot = await ref.read(clientTermsSnapshotProvider.future);
+        if (!mounted) return;
+        final current = ref.read(authProvider);
+        if (!current.isLoggedIn ||
+            current.clientId != auth.clientId ||
+            ref.read(clientAgentIdProvider) != agentId) {
+          return;
+        }
+        if (!snapshot.available || snapshot.rules.isEmpty) {
+          setState(() => _termsRetryAvailable = true);
+          return;
+        }
+        if (snapshot.clientId != auth.clientId || snapshot.agentId != agentId) {
+          setState(() => _termsRetryAvailable = true);
+          return;
+        }
+        if (snapshot.accepted) {
+          setState(() => _termsRetryAvailable = false);
+          return;
+        }
+        if (!_canPresentTerms) {
+          setState(() => _termsRetryAvailable = true);
+          return;
+        }
+        setState(() => _termsRetryAvailable = false);
+        final refresh = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => _TermsAcceptanceDialog(snapshot: snapshot),
+        );
+        if (!mounted) return;
+        if (refresh == true) {
+          ref.invalidate(clientTermsSnapshotProvider);
+          _termsCheckQueued = true;
+        }
+      } catch (_) {
+        if (mounted) setState(() => _termsRetryAvailable = true);
+      } finally {
+        _termsCheckRunning = false;
+        if (mounted && _termsCheckQueued) {
+          _termsCheckQueued = false;
+          _checkAndShowTermsDialog();
+        }
       }
     });
   }
 
-  /// Показать диалог принятия правил
-  Future<void> _showTermsDialog() async {
-    if (!mounted) return;
+  Widget _termsRetryCard() => Padding(
+    padding: const EdgeInsets.all(12),
+    child: Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              tr(
+                context,
+                ru: 'Правила требуют проверки. Если загрузка не удалась, проверьте соединение и повторите.',
+                zh: '需要核对服务规则。如果加载失败，请检查网络后重试。',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () => _checkAndShowTermsDialog(refreshRules: true),
+              icon: const Icon(Icons.refresh),
+              label: Text(
+                tr(context, ru: 'Повторить проверку правил', zh: '重新核对规则'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const _TermsAcceptanceDialog(),
-    );
-  }
+  Widget _withTermsRetry(Widget child) => !_termsRetryAvailable
+      ? child
+      : Column(
+          children: [
+            _termsRetryCard(),
+            Expanded(child: child),
+          ],
+        );
 
   void _openNoCodeSearch() {
     context.push('/search-nocode');
@@ -106,6 +223,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(
+      authProvider.select(
+        (value) => (value.isLoggedIn, value.isLoading, value.clientId),
+      ),
+      (_, _) => _checkAndShowTermsDialog(),
+    );
+    ref.listen(clientAgentIdProvider, (_, _) => _checkAndShowTermsDialog());
+    ref.listen(activeShellBranchIndexProvider, (_, next) {
+      if (next == ShellBranchIndex.home) {
+        _checkAndShowTermsDialog(refreshRules: true);
+      }
+    });
     final clientCode = ref.watch(activeClientCodeProvider);
     final authState = ref.watch(authProvider);
     final clientProfile = ref.watch(clientProfileProvider);
@@ -118,11 +247,43 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         authState.isLoggedIn && !authState.isLoading;
 
     if (clientCode == null) {
-      return const EmptyState(
-        icon: Icons.badge_outlined,
-        title: 'Выберите код клиента',
-        message:
-            'Чтобы увидеть данные, сначала выберите или добавьте код клиента.',
+      final codes = ref.watch(clientCodesControllerProvider);
+      if (codes.isLoading) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      return _withTermsRetry(
+        EmptyState(
+          icon: codes.hasError
+              ? Icons.sync_problem_rounded
+              : Icons.badge_outlined,
+          title: tr(
+            context,
+            ru: codes.hasError
+                ? 'Не удалось загрузить коды клиента'
+                : 'Выберите или добавьте код клиента',
+            zh: codes.hasError ? '无法加载客户代码' : '选择或添加客户代码',
+          ),
+          message: tr(
+            context,
+            ru: codes.hasError
+                ? 'Проверьте соединение и повторите загрузку.'
+                : 'Код объединяет ваши посылки, фотоотчёты и счета.',
+            zh: codes.hasError ? '请检查网络连接后重试。' : '客户代码关联您的包裹、照片和账单。',
+          ),
+          actionLabel: tr(
+            context,
+            ru: codes.hasError ? 'Повторить' : 'Открыть коды клиента',
+            zh: codes.hasError ? '重试' : '打开客户代码',
+          ),
+          onAction: codes.hasError
+              ? () => ref.invalidate(clientCodesControllerProvider)
+              : () => showBlurredModalBottomSheet<void>(
+                  context: context,
+                  useRootNavigator: true,
+                  isScrollControlled: true,
+                  builder: (_) => const ClientSwitcherSheet(),
+                ),
+        ),
       );
     }
 
@@ -145,6 +306,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     final AsyncValue<int> tracksCountAsync = shouldLoadDashboardData
         ? ref.watch(homeTracksCountProvider(clientCode))
+        : const AsyncValue.loading();
+    final AsyncValue<int> pendingTracksCountAsync = shouldLoadDashboardData
+        ? ref.watch(homePendingTracksCountProvider(clientCode))
         : const AsyncValue.loading();
     final AsyncValue<int> assembliesCountAsync = shouldLoadDashboardData
         ? ref.watch(homeAssembliesCountProvider(clientCode))
@@ -169,13 +333,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         () => ref.invalidate(invoicesDigestProvider(clientCode)),
       if (tracksCountAsync.hasError)
         () => ref.invalidate(homeTracksCountProvider(clientCode)),
+      if (pendingTracksCountAsync.hasError)
+        () => ref.invalidate(homePendingTracksCountProvider(clientCode)),
       if (assembliesCountAsync.hasError)
         () => ref.invalidate(homeAssembliesCountProvider(clientCode)),
       if (invoicesCountAsync.hasError)
         () => ref.invalidate(invoicesCountProvider(clientCode)),
     ];
 
-    final tracksCount = tracksCountAsync.asData?.value;
+    final warehouseTracksCount = tracksCountAsync.asData?.value;
+    final pendingTracksCount = pendingTracksCountAsync.asData?.value;
+    final tracksCount =
+        warehouseTracksCount != null && pendingTracksCount != null
+        ? warehouseTracksCount + pendingTracksCount
+        : null;
     final assembliesCount = assembliesCountAsync.asData?.value;
     final invoicesCount = invoicesCountAsync.asData?.value;
     final referralData = referralAsync.asData?.value;
@@ -192,6 +363,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     Future<void> onRefresh() async {
       debugPrint('[Home] pull-to-refresh triggered');
+      _checkAndShowTermsDialog(refreshRules: true);
       ref.read(staleDataNoticeProvider.notifier).clear();
       ref.invalidate(clientProfileProvider);
       unawaited(
@@ -209,6 +381,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ref.invalidate(invoicesDigestProvider(clientCode));
       ref.invalidate(photosRecentProvider((clientCode: clientCode, limit: 12)));
       ref.invalidate(homeTracksCountProvider(clientCode));
+      ref.invalidate(homePendingTracksCountProvider(clientCode));
       ref.invalidate(homeAssembliesCountProvider(clientCode));
       ref.invalidate(invoicesCountProvider(clientCode));
       ref.invalidate(referralProvider);
@@ -222,6 +395,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             photosRecentProvider((clientCode: clientCode, limit: 12)).future,
           ),
           ref.read(homeTracksCountProvider(clientCode).future),
+          ref.read(homePendingTracksCountProvider(clientCode).future),
           ref.read(homeAssembliesCountProvider(clientCode).future),
           ref.read(invoicesCountProvider(clientCode).future),
           ref.read(referralProvider.future),
@@ -279,6 +453,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             0,
           ),
           children: [
+            if (_termsRetryAvailable) _termsRetryCard(),
             _HomeReveal(
               order: 0,
               child: useWideHomeLayout
@@ -297,6 +472,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ),
             ),
             const SizedBox(height: 15),
+            if ((invoicesCount ?? 0) > 0) ...[
+              HomePaymentAttentionCard(
+                clientCode: clientCode,
+                count: invoicesCount!,
+              ),
+              const SizedBox(height: 12),
+            ],
             const TrainingHomeInvitation(),
             if (useWideHomeLayout) ...[
               _HomeReveal(
@@ -355,6 +537,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       : currentCnyRateAsync,
                   bonusKgValue: _formatKg(bonusKgBalance),
                   tracksValue: _formatCount(tracksCount),
+                  pendingTracksValue: _formatCount(pendingTracksCount),
+                  warehouseTracksValue: _formatCount(warehouseTracksCount),
                   assembliesValue: _formatCount(assembliesCount),
                   invoicesValue: _formatCount(invoicesCount),
                   onTracksTap: () => context.go('/tracks'),
@@ -1247,6 +1431,8 @@ class _StatsBlock extends StatelessWidget {
   final AsyncValue<CurrentCnyRate?>? currentCnyRate;
   final String bonusKgValue;
   final String tracksValue;
+  final String pendingTracksValue;
+  final String warehouseTracksValue;
   final String assembliesValue;
   final String invoicesValue;
   final VoidCallback onTracksTap;
@@ -1261,6 +1447,8 @@ class _StatsBlock extends StatelessWidget {
     this.currentCnyRate,
     required this.bonusKgValue,
     required this.tracksValue,
+    required this.pendingTracksValue,
+    required this.warehouseTracksValue,
     required this.assembliesValue,
     required this.invoicesValue,
     required this.onTracksTap,
@@ -1285,6 +1473,8 @@ class _StatsBlock extends StatelessWidget {
       ],
       HomeStatsGrid(
         tracksValue: tracksValue,
+        pendingTracksValue: pendingTracksValue,
+        warehouseTracksValue: warehouseTracksValue,
         assembliesValue: assembliesValue,
         invoicesValue: invoicesValue,
         bonusKgValue: bonusKgValue,
@@ -1624,8 +1814,6 @@ class _WarehouseDataBlockState extends State<_WarehouseDataBlock> {
                       label: 'Телефон склада',
                       icon: CupertinoIcons.phone,
                       value: phone,
-                      showMarketplaceNotice: true,
-                      onMarketplaceNoticeClosed: _highlightCheckerButton,
                     ),
                   ),
               ];
@@ -1634,9 +1822,17 @@ class _WarehouseDataBlockState extends State<_WarehouseDataBlock> {
               if (!useSingleRow || controls.length == 1) {
                 return Column(
                   children: [
-                    for (var i = 0; i < controls.length; i++) ...[
-                      if (i > 0) const SizedBox(height: 8),
-                      controls[i],
+                    controls.first,
+                    if (controls.length > 1) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          for (var i = 1; i < controls.length; i++) ...[
+                            if (i > 1) const SizedBox(width: 8),
+                            Expanded(child: controls[i]),
+                          ],
+                        ],
+                      ),
                     ],
                   ],
                 );
@@ -1656,7 +1852,6 @@ class _WarehouseDataBlockState extends State<_WarehouseDataBlock> {
             const SizedBox(height: 8),
             TrainingTarget(
               id: 'warehouse.check',
-              onActivate: openAddressChecker,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 280),
                 curve: Curves.easeOut,
@@ -1791,6 +1986,7 @@ class _WarehouseCopyButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width <= 360;
     return Material(
       color: context.brandPrimary.withValues(alpha: 0.08),
       borderRadius: BorderRadius.circular(15),
@@ -1799,7 +1995,7 @@ class _WarehouseCopyButton extends StatelessWidget {
         onTap: () => _copyValue(context),
         child: Container(
           height: 44,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          padding: EdgeInsets.symmetric(horizontal: compact ? 3 : 12),
           decoration: BoxDecoration(
             border: Border.all(
               color: context.brandPrimary.withValues(alpha: 0.12),
@@ -1809,8 +2005,8 @@ class _WarehouseCopyButton extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, color: context.brandPrimary, size: 17),
-              const SizedBox(width: 8),
+              Icon(icon, color: context.brandPrimary, size: compact ? 16 : 17),
+              SizedBox(width: compact ? 4 : 8),
               Flexible(
                 child: Text(
                   label,
@@ -1820,7 +2016,7 @@ class _WarehouseCopyButton extends StatelessWidget {
                     color: context.brandPrimary,
                     fontFamily: 'Gilroy',
                     fontWeight: FontWeight.w800,
-                    fontSize: 13.5,
+                    fontSize: compact ? 12 : 13.5,
                     height: 1.1,
                   ),
                 ),
@@ -1846,7 +2042,7 @@ class _WarehouseCopyButton extends StatelessWidget {
       onMarketplaceNoticeClosed?.call();
       return;
     }
-    _showStyledSnackBar(context, 'Текст скопирован');
+    _showStyledSnackBar(context, '$label скопирован');
   }
 }
 
@@ -2538,11 +2734,22 @@ class _PhotoThumb extends StatelessWidget {
 }
 
 /// Диалог принятия правил оказания услуг при первом входе
-class _TermsAcceptanceDialog extends ConsumerWidget {
-  const _TermsAcceptanceDialog();
-
+class _TermsAcceptanceDialog extends ConsumerStatefulWidget {
+  const _TermsAcceptanceDialog({required this.snapshot});
+  final ClientTermsSnapshot snapshot;
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_TermsAcceptanceDialog> createState() =>
+      _TermsAcceptanceDialogState();
+}
+
+class _TermsAcceptanceDialogState
+    extends ConsumerState<_TermsAcceptanceDialog> {
+  bool _submitting = false;
+  bool _versionChanged = false;
+  String? _error;
+  TermsIdentity get identity => widget.snapshot.identity;
+  @override
+  Widget build(BuildContext context) {
     final companyName = ref.watch(companyNameProvider);
 
     return PopScope(
@@ -2634,6 +2841,24 @@ class _TermsAcceptanceDialog extends ConsumerWidget {
                           ),
                           textAlign: TextAlign.center,
                         ),
+                        const SizedBox(height: 12),
+                        Text(
+                          tr(
+                            context,
+                            ru: 'Версия правил: ${identity.displayVersion}',
+                            zh: '规则版本：${identity.displayVersion}',
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        if (identity.updatedAt != null)
+                          Text(
+                            tr(
+                              context,
+                              ru: 'Обновлены ${DateFormat("dd.MM.yyyy").format(identity.updatedAt!.toLocal())}',
+                              zh: '更新日期 ${DateFormat("yyyy.MM.dd").format(identity.updatedAt!.toLocal())}',
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
                         const SizedBox(height: 24),
 
                         // Блок с основными пунктами
@@ -2680,11 +2905,20 @@ class _TermsAcceptanceDialog extends ConsumerWidget {
 
                         // Кнопка "Ознакомиться с правилами"
                         OutlinedButton.icon(
-                          onPressed: () async {
-                            // Открываем правила поверх диалога
-                            await context.push('/rules');
-                            // После возврата пользователь снова видит диалог
-                          },
+                          onPressed: _submitting
+                              ? null
+                              : () async {
+                                  // Открываем правила поверх диалога
+                                  await showBlurredModalBottomSheet<void>(
+                                    context: context,
+                                    useRootNavigator: true,
+                                    isScrollControlled: true,
+                                    builder: (_) => TermsDocumentSheet(
+                                      snapshot: widget.snapshot,
+                                    ),
+                                  );
+                                  // После возврата пользователь снова видит диалог
+                                },
                           icon: const Icon(Icons.article_outlined, size: 20),
                           label: const Text('Ознакомиться с правилами'),
                           style: OutlinedButton.styleFrom(
@@ -2704,20 +2938,94 @@ class _TermsAcceptanceDialog extends ConsumerWidget {
                         ),
                         const SizedBox(height: 12),
 
+                        if (_error != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Text(
+                              _error!,
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                            ),
+                          ),
                         // Кнопка "Соглашаюсь"
                         FilledButton.icon(
-                          onPressed: () async {
-                            // Отмечаем что пользователь принял правила
-                            final service = ref.read(showcaseServiceProvider);
-                            await service.acceptTerms();
-
-                            if (context.mounted) {
-                              Navigator.of(context).pop();
-                            }
-                          },
+                          onPressed: _submitting
+                              ? null
+                              : () async {
+                                  if (_versionChanged) {
+                                    Navigator.of(context).pop(true);
+                                    return;
+                                  }
+                                  final auth = ref.read(authProvider);
+                                  if (auth.clientId != identity.clientId ||
+                                      ref.read(clientAgentIdProvider) !=
+                                          identity.agentId) {
+                                    Navigator.of(context).pop(true);
+                                    return;
+                                  }
+                                  setState(() {
+                                    _submitting = true;
+                                    _error = null;
+                                  });
+                                  try {
+                                    await ref
+                                        .read(clientTermsServiceProvider)
+                                        .accept(widget.snapshot);
+                                    if (!context.mounted) return;
+                                    final current = ref.read(authProvider);
+                                    ref.invalidate(clientTermsSnapshotProvider);
+                                    if (current.clientId != identity.clientId ||
+                                        ref.read(clientAgentIdProvider) !=
+                                            identity.agentId) {
+                                      Navigator.of(context).pop(true);
+                                      return;
+                                    }
+                                    Navigator.of(context).pop(false);
+                                  } on TermsVersionChanged {
+                                    if (!context.mounted) return;
+                                    setState(() {
+                                      _versionChanged = true;
+                                      _error = tr(
+                                        context,
+                                        ru: 'Правила обновились. Загрузите и прочитайте актуальную версию.',
+                                        zh: '规则已更新，请加载并阅读最新版本。',
+                                      );
+                                    });
+                                  } on TermsAccountChanged {
+                                    if (context.mounted) {
+                                      Navigator.of(context).pop(true);
+                                    }
+                                  } catch (_) {
+                                    if (!context.mounted) return;
+                                    setState(
+                                      () => _error = tr(
+                                        context,
+                                        ru: 'Не удалось сохранить принятие правил на сервере. Проверьте соединение и повторите.',
+                                        zh: '无法将规则确认保存到服务器，请检查网络后重试。',
+                                      ),
+                                    );
+                                  } finally {
+                                    if (mounted) {
+                                      setState(() => _submitting = false);
+                                    }
+                                  }
+                                },
                           icon: const Icon(Icons.done_rounded, size: 22),
-                          label: const Text(
-                            'Соглашаюсь',
+                          label: Text(
+                            tr(
+                              context,
+                              ru: _submitting
+                                  ? 'Сохраняем…'
+                                  : _versionChanged
+                                  ? 'Обновить правила'
+                                  : 'Соглашаюсь',
+                              zh: _submitting
+                                  ? '正在保存…'
+                                  : _versionChanged
+                                  ? '更新规则'
+                                  : '我同意',
+                            ),
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w700,

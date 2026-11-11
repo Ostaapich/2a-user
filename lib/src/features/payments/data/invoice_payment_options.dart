@@ -33,6 +33,11 @@ class InvoicePaymentSelection {
     this.walletAddress,
     this.network,
     this.canChange = false,
+    this.qrPayload,
+    this.purpose,
+    this.sumKopecks,
+    this.receiptOnly = false,
+    this.hasReceiptOnlyDecision = false,
   });
   final String method;
   final int? paymentId;
@@ -42,6 +47,13 @@ class InvoicePaymentSelection {
   final String? walletAddress;
   final String? network;
   final bool canChange;
+  final String? qrPayload;
+  final String? purpose;
+  final int? sumKopecks;
+
+  /// Existing attempt may accept receipts but must not offer a new transfer.
+  final bool receiptOnly;
+  final bool hasReceiptOnlyDecision;
 
   factory InvoicePaymentSelection.fromJson(Map<String, dynamic> json) {
     final method = json['method'] as String;
@@ -55,6 +67,11 @@ class InvoicePaymentSelection {
       walletAddress: json['walletAddress'] as String?,
       network: json['network'] as String?,
       canChange: json['canChange'] == true,
+      qrPayload: json['qrPayload'] as String?,
+      purpose: json['purpose'] as String?,
+      sumKopecks: (json['sumKopecks'] as num?)?.toInt(),
+      receiptOnly: json['receiptOnly'] == true,
+      hasReceiptOnlyDecision: json.containsKey('receiptOnly'),
     );
     if ((method == 'usdt_trc20' || method == 'alipay') &&
         (selection.paymentId == null ||
@@ -77,12 +94,64 @@ class InvoicePaymentOptions {
     this.activeMethod,
     this.lockedReason,
     this.activePayment,
+    this.canResumeActivePayment = false,
+    this.hasResumeDecision = false,
   });
   final List<InvoicePaymentMethodOption> methods;
   final bool canChange;
   final String? activeMethod;
   final String? lockedReason;
   final InvoicePaymentSelection? activePayment;
+  final bool canResumeActivePayment;
+  final bool hasResumeDecision;
+
+  /// Restores only a proven existing pending attempt. New-payment availability
+  /// is distinct from accepting a receipt for a transfer already performed.
+  InvoicePaymentSelection? resumablePayment({String? draftMethod}) {
+    final existing = activePayment;
+    if (!canChange ||
+        lockedReason != null ||
+        existing == null ||
+        (existing.paymentId ?? 0) <= 0 ||
+        !existing.canChange ||
+        existing.method != activeMethod ||
+        !const {'bank_qr', 'usdt_trc20', 'alipay'}.contains(existing.method)) {
+      return null;
+    }
+    if (draftMethod != null &&
+        draftMethod != activeMethod &&
+        methods.any(
+          (method) => method.code == draftMethod && method.available,
+        )) {
+      return null;
+    }
+    final matching = methods.where((method) => method.code == existing.method);
+    final option = matching.isEmpty ? null : matching.first;
+    final legacyReceiptOnly =
+        !existing.hasReceiptOnlyDecision &&
+        const {'usdt_trc20', 'alipay'}.contains(existing.method) &&
+        option != null &&
+        !option.available;
+    if (hasResumeDecision && !canResumeActivePayment && !legacyReceiptOnly) {
+      return null;
+    }
+    if (option?.available == true || existing.receiptOnly) return existing;
+    if (!legacyReceiptOnly) return null;
+    return InvoicePaymentSelection(
+      method: existing.method,
+      paymentId: existing.paymentId,
+      currency: existing.currency,
+      amount: existing.amount,
+      qrImageUrl: existing.qrImageUrl,
+      walletAddress: existing.walletAddress,
+      network: existing.network,
+      canChange: existing.canChange,
+      qrPayload: existing.qrPayload,
+      purpose: existing.purpose,
+      sumKopecks: existing.sumKopecks,
+      receiptOnly: true,
+    );
+  }
 
   factory InvoicePaymentOptions.fromJson(Map<String, dynamic> json) =>
       InvoicePaymentOptions(
@@ -94,6 +163,8 @@ class InvoicePaymentOptions {
             )
             .toList(growable: false),
         canChange: json['canChange'] == true,
+        canResumeActivePayment: json['canResumeActivePayment'] == true,
+        hasResumeDecision: json.containsKey('canResumeActivePayment'),
         activeMethod: json['activeMethod'] as String?,
         lockedReason: json['lockedReason'] as String?,
         activePayment: json['activePayment'] is Map

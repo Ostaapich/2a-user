@@ -11,11 +11,31 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:twoalogisticcabineuser/src/core/network/api_client.dart';
 import 'package:twoalogisticcabineuser/src/core/services/chat_presence_service.dart';
 import 'package:twoalogisticcabineuser/src/features/auth/data/auth_provider.dart';
+import 'package:twoalogisticcabineuser/src/features/news/data/news_provider.dart';
+import 'package:twoalogisticcabineuser/src/features/rules/data/rules_provider.dart';
 import 'package:twoalogisticcabineuser/src/core/services/push_notification_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   tearDown(() => PushNotificationService.setMessagingForTesting(null));
+
+  test(
+    'disposing during initial auth restore does not update unmounted state',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'is_logged_in': true,
+        'client_id': 101,
+      });
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(_HangingDeviceCleanupApiClient()),
+        ],
+      );
+      container.read(authProvider);
+      container.dispose();
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    },
+  );
 
   test(
     'token completing after logout cannot register the old session',
@@ -64,6 +84,12 @@ void main() {
       expect(api.deviceRegistrations, 0);
       verify(() => messaging.deleteToken()).called(1);
       expect(container.read(authProvider).isLoggedIn, false);
+      expect(
+        (await SharedPreferences.getInstance()).getString(
+          'last_company_domain',
+        ),
+        'test.local',
+      );
     },
   );
 
@@ -116,6 +142,60 @@ void main() {
 
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getBool('is_logged_in'), isNull);
+    },
+  );
+  test(
+    'external browser session change forgets this tab without deleting shared winning identity',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'auth_token': 'other-tab-token',
+        'is_logged_in': true,
+        'client_profile_cache_v1': 'other-tab-cache',
+        'active_client_code': 'B202',
+        'client_id': 202,
+        'user_email': 'other@example.test',
+      });
+      final api = _ExternalSessionApi();
+      final container = ProviderContainer(
+        overrides: [apiClientProvider.overrideWithValue(api)],
+      );
+      addTearDown(container.dispose);
+      await _waitForAuthLoaded(container);
+      await container.read(authProvider.notifier).logout();
+      expect(container.read(authProvider).isLoggedIn, false);
+      expect(api.clearTokenCalled, false);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('auth_token'), 'other-tab-token');
+      expect(prefs.getBool('is_logged_in'), true);
+      expect(prefs.getString('client_profile_cache_v1'), 'other-tab-cache');
+      expect(prefs.getString('active_client_code'), 'B202');
+      expect(prefs.getInt('client_id'), 202);
+      expect(prefs.getString('user_email'), 'other@example.test');
+    },
+  );
+  test(
+    'logout invalidates every numeric news/rule detail across tenant identities',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final api = _TenantDetailApi();
+      final container = ProviderContainer(
+        overrides: [apiClientProvider.overrideWithValue(api)],
+      );
+      addTearDown(container.dispose);
+      await _waitForAuthLoaded(container);
+      expect(
+        (await container.read(newsItemProvider('51').future))?.title,
+        'Tenant A',
+      );
+      expect(
+        (await container.read(ruleItemProvider('52').future))?.title,
+        'Tenant A',
+      );
+      api.foreign = true;
+      await container.read(authProvider.notifier).logout();
+      expect(await container.read(newsItemProvider('51').future), isNull);
+      expect(await container.read(ruleItemProvider('52').future), isNull);
+      expect(api.detailReads, 4);
     },
   );
 }
@@ -193,4 +273,44 @@ class _RecordingChatPresenceService extends ChatPresenceService {
     wasStoppedForLogout = true;
     super.stopForLogout();
   }
+}
+
+class _TenantDetailApi extends _HangingDeviceCleanupApiClient {
+  bool foreign = false;
+  int detailReads = 0;
+  @override
+  Future<Response<T>> get<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Options? options,
+  }) async {
+    if (path == '/news/51' || path == '/service-rules/52') {
+      detailReads++;
+      if (foreign) {
+        throw DioException(
+          requestOptions: RequestOptions(path: path),
+          response: Response<dynamic>(
+            requestOptions: RequestOptions(path: path),
+            statusCode: 404,
+          ),
+        );
+      }
+      final item = {
+        'id': 51,
+        'title': 'Tenant A',
+        'content': 'Private tenant content',
+      };
+      return Response<T>(
+        requestOptions: RequestOptions(path: path),
+        statusCode: 200,
+        data: (path.startsWith('/news') ? {'data': item} : item) as T,
+      );
+    }
+    throw StateError('Unscripted request $path');
+  }
+}
+
+class _ExternalSessionApi extends _HangingDeviceCleanupApiClient {
+  @override
+  bool takeExternalSessionChange() => true;
 }

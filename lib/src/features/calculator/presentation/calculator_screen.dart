@@ -14,6 +14,8 @@ import '../../../core/ui/tutorial_card.dart';
 import '../../../core/utils/locale_text.dart';
 import '../../auth/data/auth_provider.dart';
 import '../domain/assembly_cost_calculation.dart';
+import '../domain/calculator_cargo_places.dart';
+import 'calculator_cargo_places_editor.dart';
 
 // ─── Providers ───────────────────────────────────────────────────────────────
 
@@ -177,6 +179,18 @@ class _CalculatorScreenState extends ConsumerState<CalculatorScreen> {
       AssemblyPlacePreference.singleIfPossible;
   bool _hasFragileGoods = false;
   bool _hasInsurance = false;
+  bool _advancedCargoMode = false;
+  CargoPlacesTotals? _cargoPlacesTotals;
+
+  double get _cargoWeightKg => _advancedCargoMode
+      ? _cargoPlacesTotals?.weightKg ?? 0
+      : double.tryParse(_weightCtrl.text.replaceAll(',', '.')) ?? 0;
+  double get _cargoVolumeM3 => _advancedCargoMode
+      ? _cargoPlacesTotals?.volumeM3 ?? 0
+      : double.tryParse(_volumeCtrl.text.replaceAll(',', '.')) ?? 0;
+  int get _cargoPlacesCount => _advancedCargoMode
+      ? _cargoPlacesTotals?.placesCount ?? 0
+      : int.tryParse(_placesCtrl.text) ?? 0;
 
   @override
   void dispose() {
@@ -196,13 +210,12 @@ class _CalculatorScreenState extends ConsumerState<CalculatorScreen> {
     List<CalculatorPackaging> packagings,
     double transshipment,
   ) {
-    final tariff =
-        _selectedTariff ?? (tariffs.isNotEmpty ? tariffs.first : null);
+    final tariff = _selectedTariff;
     if (tariff == null) return null;
 
-    final weight = double.tryParse(_weightCtrl.text.replaceAll(',', '.')) ?? 0;
-    final volume = double.tryParse(_volumeCtrl.text.replaceAll(',', '.')) ?? 0;
-    final places = int.tryParse(_placesCtrl.text) ?? 0;
+    final weight = _cargoWeightKg;
+    final volume = _cargoVolumeM3;
+    final places = _cargoPlacesCount;
     final total = int.tryParse(_totalCtrl.text) ?? 0;
     final insuranceAmount =
         double.tryParse(_insuranceAmountCtrl.text.replaceAll(',', '.')) ?? 0;
@@ -297,8 +310,8 @@ class _CalculatorScreenState extends ConsumerState<CalculatorScreen> {
           onRetry: () => ref.invalidate(_tariffsProvider),
         ),
         data: (tariffs) {
-          if (_selectedTariff == null && tariffs.isNotEmpty) {
-            _selectedTariff = tariffs.first;
+          if (_selectedTariff == null && tariffs.length == 1) {
+            _selectedTariff = tariffs.single;
           }
           if (tariffs.isEmpty) {
             return const _CalculatorStateCard(
@@ -308,7 +321,7 @@ class _CalculatorScreenState extends ConsumerState<CalculatorScreen> {
               message: 'Для вашего кабинета пока нет доступных тарифов.',
             );
           }
-          final selectedTariff = _selectedTariff ?? tariffs.first;
+          final selectedTariff = _selectedTariff;
           return _SectionCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -324,10 +337,18 @@ class _CalculatorScreenState extends ConsumerState<CalculatorScreen> {
                   id: 'calculator.tariff',
                   child: _PackagingSummaryTile(
                     title: 'Выбранный тариф',
-                    value: selectedTariff.name,
-                    detail: _tariffPricingDescription(selectedTariff),
+                    value:
+                        selectedTariff?.name ??
+                        tr(context, ru: 'Выберите тариф', zh: '请选择运价'),
+                    detail: selectedTariff == null
+                        ? tr(
+                            context,
+                            ru: 'Укажите подходящий вариант для вашего груза',
+                            zh: '请选择适合货物的运价',
+                          )
+                        : _tariffPricingDescription(selectedTariff),
                     icon: Icons.local_shipping_outlined,
-                    isSelected: true,
+                    isSelected: selectedTariff != null,
                     onTap: () => _showTariffSheet(tariffs),
                   ),
                 ),
@@ -353,66 +374,139 @@ class _CalculatorScreenState extends ConsumerState<CalculatorScreen> {
               subtitle: 'Укажите ожидаемые данные будущей сборки.',
             ),
             const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: TrainingTarget(
-                    id: 'calculator.weight',
+            SwitchListTile.adaptive(
+              key: const ValueKey('calculator.advanced-mode'),
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                tr(context, ru: 'Расширенный режим', zh: '高级模式'),
+                style: const TextStyle(
+                  fontFamily: 'Gilroy',
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              subtitle: Text(
+                tr(
+                  context,
+                  ru: 'Габариты и вес каждого места',
+                  zh: '每件货物的尺寸和重量',
+                ),
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontFamily: 'Gilroy',
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              value: _advancedCargoMode,
+              activeTrackColor: context.brandPrimary.withValues(alpha: 0.45),
+              activeThumbColor: context.brandPrimary,
+              onChanged: (value) {
+                FocusManager.instance.primaryFocus?.unfocus();
+                setState(() => _advancedCargoMode = value);
+              },
+            ),
+            const SizedBox(height: 10),
+            Offstage(
+              offstage: _advancedCargoMode,
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TrainingTarget(
+                          id: 'calculator.weight',
+                          child: TrainingTarget(
+                            id:
+                                (double.tryParse(
+                                          _weightCtrl.text.replaceAll(',', '.'),
+                                        ) ??
+                                        0) >
+                                    0
+                                ? 'calculator.valid.weight'
+                                : 'calculator.missing.weight',
+                            child: _NumField(
+                              label: 'Вес, кг',
+                              controller: _weightCtrl,
+                              hint: 'например 15.5',
+                              decimal: true,
+                              onChanged: (_) => setState(() {}),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TrainingTarget(
+                          id: (int.tryParse(_placesCtrl.text) ?? 0) > 0
+                              ? 'calculator.valid.places'
+                              : 'calculator.missing.places',
+                          child: _NumField(
+                            label: 'Мест',
+                            controller: _placesCtrl,
+                            hint: '1',
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  TrainingTarget(
+                    id: 'calculator.volume',
                     child: TrainingTarget(
                       id:
                           (double.tryParse(
-                                    _weightCtrl.text.replaceAll(',', '.'),
+                                    _volumeCtrl.text.replaceAll(',', '.'),
                                   ) ??
                                   0) >
                               0
-                          ? 'calculator.valid.weight'
-                          : 'calculator.missing.weight',
+                          ? 'calculator.valid.volume'
+                          : 'calculator.missing.volume',
                       child: _NumField(
-                        label: 'Вес, кг',
-                        controller: _weightCtrl,
-                        hint: 'например 15.5',
+                        label: 'Объём, м³',
+                        controller: _volumeCtrl,
+                        hint: 'например 0.15',
                         decimal: true,
                         onChanged: (_) => setState(() {}),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TrainingTarget(
-                    id: (int.tryParse(_placesCtrl.text) ?? 0) > 0
-                        ? 'calculator.valid.places'
-                        : 'calculator.missing.places',
-                    child: _NumField(
-                      label: 'Мест',
-                      controller: _placesCtrl,
-                      hint: '1',
-                      onChanged: (_) => setState(() {}),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            TrainingTarget(
-              id: 'calculator.volume',
-              child: TrainingTarget(
-                id:
-                    (double.tryParse(_volumeCtrl.text.replaceAll(',', '.')) ??
-                            0) >
-                        0
-                    ? 'calculator.valid.volume'
-                    : 'calculator.missing.volume',
-                child: _NumField(
-                  label: 'Объём, м³',
-                  controller: _volumeCtrl,
-                  hint: 'например 0.15',
-                  decimal: true,
-                  onChanged: (_) => setState(() {}),
-                ),
+                  const SizedBox(height: 10),
+                ],
               ),
             ),
-            const SizedBox(height: 10),
+            Offstage(
+              offstage: !_advancedCargoMode,
+              child: CalculatorCargoPlacesEditor(
+                onChanged: (totals) =>
+                    setState(() => _cargoPlacesTotals = totals),
+              ),
+            ),
+            if (_advancedCargoMode) ...[
+              const SizedBox(height: 10),
+              Text(
+                _cargoPlacesTotals == null
+                    ? tr(
+                        context,
+                        ru: 'Заполните габариты и вес каждого места. Упаковка рассчитывается на каждое место.',
+                        zh: '请填写每件货物的尺寸和重量。包装按件计算。',
+                      )
+                    : tr(
+                        context,
+                        ru: 'Мест: $_cargoPlacesCount · Вес: ${_cargoWeightKg.toStringAsFixed(2)} кг · Объём: ${_cargoVolumeM3.toStringAsFixed(4)} м³',
+                        zh: '件数：$_cargoPlacesCount · 重量：${_cargoWeightKg.toStringAsFixed(2)} 公斤 · 体积：${_cargoVolumeM3.toStringAsFixed(4)} m³',
+                      ),
+                key: const ValueKey('calculator.cargo-totals'),
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontFamily: 'Gilroy',
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
             _NumField(
               label: 'Треков всего',
               controller: _totalCtrl,
@@ -575,11 +669,9 @@ class _CalculatorScreenState extends ConsumerState<CalculatorScreen> {
   Widget build(BuildContext context) {
     final tariffsAsync = ref.watch(_tariffsProvider);
     final packagingsAsync = ref.watch(_packagingsProvider);
-    final volumeM3 =
-        double.tryParse(_volumeCtrl.text.replaceAll(',', '.')) ?? 0;
-    final weightKg =
-        double.tryParse(_weightCtrl.text.replaceAll(',', '.')) ?? 0;
-    final placesCount = int.tryParse(_placesCtrl.text) ?? 0;
+    final volumeM3 = _cargoVolumeM3;
+    final weightKg = _cargoWeightKg;
+    final placesCount = _cargoPlacesCount;
     final packagingTypeIds = <int>{
       if (_selectedPrimaryPackaging != null) _selectedPrimaryPackaging!.id,
       ..._selectedAddonPackagingIds,
@@ -664,6 +756,7 @@ class _CalculatorScreenState extends ConsumerState<CalculatorScreen> {
         children: [
           ListView(
             controller: _scrollController,
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: EdgeInsets.fromLTRB(
               16,
               topPad * 0.7 + 16,
@@ -2539,6 +2632,7 @@ class _NumField extends StatelessWidget {
             return TextFormField(
               controller: controller,
               focusNode: focusNode,
+              textInputAction: TextInputAction.done,
               onChanged: onChanged,
               keyboardType: decimal
                   ? const TextInputType.numberWithOptions(decimal: true)

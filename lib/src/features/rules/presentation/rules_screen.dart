@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../training/presentation/training_target.dart';
 import '../../../core/ui/app_colors.dart';
+import '../../../core/ui/app_search_field.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/scroll_to_top_button.dart';
 import '../../../core/ui/tutorial_card.dart';
@@ -22,6 +23,8 @@ class RulesScreen extends ConsumerStatefulWidget {
 
 class _RulesScreenState extends ConsumerState<RulesScreen> {
   final ScrollController _scrollController = ScrollController();
+  String _query = "";
+  final _searchController = TextEditingController();
   final GlobalKey _rulesListKey = GlobalKey();
   final GlobalKey _firstRuleKey = GlobalKey();
 
@@ -148,7 +151,23 @@ class _RulesScreenState extends ConsumerState<RulesScreen> {
           child: buildFrame(
             children: [
               ...baseHeader(),
-              _RuleCardsGrid(items: items, firstItemKey: _firstRuleKey),
+              AppSearchField(
+                controller: _searchController,
+                hintText: tr(context, ru: 'Поиск по правилам', zh: '搜索规则'),
+                onChanged: (value) =>
+                    setState(() => _query = value.trim().toLowerCase()),
+              ),
+              const SizedBox(height: 12),
+              _RuleCardsGrid(
+                items: items
+                    .where(
+                      (item) => '${item.title} ${item.content}'
+                          .toLowerCase()
+                          .contains(_query),
+                    )
+                    .toList(),
+                firstItemKey: _firstRuleKey,
+              ),
             ],
           ),
         );
@@ -158,6 +177,7 @@ class _RulesScreenState extends ConsumerState<RulesScreen> {
 
   @override
   void dispose() {
+    _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -212,6 +232,7 @@ class _RuleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final orderLabel = item.order > 0 ? item.order.toString() : '•';
+    final largeText = MediaQuery.textScalerOf(context).scale(1) > 1.3;
 
     return Material(
       color: Colors.transparent,
@@ -225,42 +246,43 @@ class _RuleCard extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 54,
-                height: 54,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      context.brandPrimary,
-                      context.brandPrimary.withValues(alpha: 0.78),
+              if (!largeText)
+                Container(
+                  width: 54,
+                  height: 54,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        context.brandPrimary,
+                        context.brandPrimary.withValues(alpha: 0.78),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(19),
+                    boxShadow: [
+                      BoxShadow(
+                        color: context.brandPrimary.withValues(alpha: 0.18),
+                        blurRadius: 18,
+                        spreadRadius: -10,
+                        offset: const Offset(0, 10),
+                      ),
                     ],
                   ),
-                  borderRadius: BorderRadius.circular(19),
-                  boxShadow: [
-                    BoxShadow(
-                      color: context.brandPrimary.withValues(alpha: 0.18),
-                      blurRadius: 18,
-                      spreadRadius: -10,
-                      offset: const Offset(0, 10),
-                    ),
-                  ],
-                ),
-                child: Center(
-                  child: Text(
-                    orderLabel,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontFamily: 'Gilroy',
-                      fontWeight: FontWeight.w900,
-                      fontSize: 20,
-                      height: 1,
+                  child: Center(
+                    child: Text(
+                      orderLabel,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontFamily: 'Gilroy',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 20,
+                        height: 1,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 12),
+              if (!largeText) const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -270,7 +292,7 @@ class _RuleCard extends StatelessWidget {
                           ? 'rules.open'
                           : 'rules.open.${item.slug}',
                       child: Text(
-                        item.title,
+                        largeText ? '$orderLabel. ${item.title}' : item.title,
                         style: const TextStyle(
                           color: AppColors.textPrimary,
                           fontFamily: 'Gilroy',
@@ -298,6 +320,11 @@ class _RuleCard extends StatelessWidget {
                     ],
                   ],
                 ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textSecondary,
               ),
             ],
           ),

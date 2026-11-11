@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../../training/presentation/training_target.dart';
 import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/sheet_handle.dart';
+import '../../../core/utils/locale_text.dart';
 import '../application/notifications_controller.dart';
 import '../domain/notification_item.dart';
 
@@ -62,8 +63,8 @@ class _NotificationsSheetState extends ConsumerState<NotificationsSheet> {
   @override
   Widget build(BuildContext context) {
     final itemsAsync = ref.watch(notificationsControllerProvider);
-    final items = itemsAsync.asData?.value ?? const <NotificationItem>[];
-    final unreadCount = items.where((item) => !item.isRead).length;
+    final unreadCount = ref.watch(unreadCountProvider);
+    final history = ref.watch(notificationsHistoryInfoProvider);
     final hasUnread = unreadCount > 0;
 
     return SafeArea(
@@ -90,7 +91,7 @@ class _NotificationsSheetState extends ConsumerState<NotificationsSheet> {
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
               child: _NotificationsHeader(
                 unreadCount: unreadCount,
-                totalCount: items.length,
+                totalCount: history.total,
                 onMarkAllRead: hasUnread
                     ? () => ref
                           .read(notificationsControllerProvider.notifier)
@@ -118,6 +119,7 @@ class _NotificationsSheetState extends ConsumerState<NotificationsSheet> {
   }
 
   Widget _buildItemsList(BuildContext context, List<NotificationItem> items) {
+    final history = ref.watch(notificationsHistoryInfoProvider);
     if (items.isEmpty) {
       return RefreshIndicator(
         onRefresh: () async {
@@ -147,9 +149,36 @@ class _NotificationsSheetState extends ConsumerState<NotificationsSheet> {
         controller: widget.controller,
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 28),
         physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: items.length,
+        itemCount:
+            items.length + (history.hasMore || history.error != null ? 1 : 0),
         separatorBuilder: (_, _) => const SizedBox(height: 10),
         itemBuilder: (context, i) {
+          if (i == items.length) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: history.loadingMore
+                  ? const Center(child: CircularProgressIndicator())
+                  : TextButton.icon(
+                      onPressed: () => ref
+                          .read(notificationsControllerProvider.notifier)
+                          .loadMore(),
+                      icon: Icon(
+                        history.error == null
+                            ? Icons.expand_more
+                            : Icons.refresh,
+                      ),
+                      label: Text(
+                        tr(
+                          context,
+                          ru: history.error == null
+                              ? 'Загрузить ещё'
+                              : 'Не удалось загрузить историю. Повторить',
+                          zh: history.error == null ? '加载更多' : '无法加载历史记录，重试',
+                        ),
+                      ),
+                    ),
+            );
+          }
           final item = items[i];
           return _NotificationTile(
             item: item,
@@ -199,80 +228,94 @@ class _NotificationsHeader extends StatelessWidget {
           ),
         ],
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(17),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
-            ),
-            child: const Icon(
-              Icons.notifications_rounded,
-              color: Colors.white,
-              size: 24,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Уведомления',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 400;
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              if (!compact)
+                Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(17),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.22),
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.notifications_rounded,
                     color: Colors.white,
-                    fontFamily: 'Gilroy',
-                    fontSize: 23,
-                    height: 1.05,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: -0.25,
+                    size: 24,
                   ),
                 ),
-                const SizedBox(height: 5),
-                Text(
-                  hasUnread
-                      ? '$unreadCount новых из $totalCount'
-                      : totalCount > 0
-                      ? 'Все уведомления прочитаны'
-                      : 'Новых событий пока нет',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xE6FFFFFF),
-                    fontFamily: 'Gilroy',
-                    fontSize: 12.8,
-                    height: 1.15,
-                    fontWeight: FontWeight.w600,
+              if (!compact) const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Уведомления',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontFamily: 'Gilroy',
+                          fontSize: 23,
+                          height: 1.05,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -0.25,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      hasUnread
+                          ? '$unreadCount новых из $totalCount'
+                          : totalCount > 0
+                          ? 'Все уведомления прочитаны'
+                          : 'Новых событий пока нет',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xE6FFFFFF),
+                        fontFamily: 'Gilroy',
+                        fontSize: 12.8,
+                        height: 1.15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              if (onMarkAllRead != null)
+                _HeaderActionButton(onTap: onMarkAllRead!, compact: compact)
+              else
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.18),
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.check_circle_outline_rounded,
+                    color: Colors.white,
+                    size: 21,
                   ),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 10),
-          if (onMarkAllRead != null)
-            _HeaderActionButton(onTap: onMarkAllRead!)
-          else
-            Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.14),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
-              ),
-              child: const Icon(
-                Icons.check_circle_outline_rounded,
-                color: Colors.white,
-                size: 21,
-              ),
-            ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
@@ -280,13 +323,14 @@ class _NotificationsHeader extends StatelessWidget {
 
 class _HeaderActionButton extends StatelessWidget {
   final VoidCallback onTap;
+  final bool compact;
 
-  const _HeaderActionButton({required this.onTap});
+  const _HeaderActionButton({required this.onTap, this.compact = false});
 
   @override
   Widget build(BuildContext context) {
     return Tooltip(
-      message: 'Прочитать всё',
+      message: tr(context, ru: 'Прочитать всё', zh: '全部标为已读'),
       child: Material(
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(16),
@@ -294,17 +338,35 @@ class _HeaderActionButton extends StatelessWidget {
           onTap: onTap,
           borderRadius: BorderRadius.circular(16),
           child: Container(
-            width: 42,
-            height: 42,
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 8 : 12,
+              vertical: 10,
+            ),
+            constraints: const BoxConstraints(minHeight: 44),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.16),
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
             ),
-            child: const Icon(
-              Icons.done_all_rounded,
-              color: Colors.white,
-              size: 21,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.done_all_rounded,
+                  color: Colors.white,
+                  size: compact ? 18 : 21,
+                ),
+                SizedBox(width: compact ? 6 : 8),
+                Text(
+                  tr(context, ru: 'Прочитать всё', zh: '全部标为已读'),
+                  style: TextStyle(
+                    fontSize: compact ? 12 : 14,
+                    color: Colors.white,
+                    fontFamily: 'Gilroy',
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
             ),
           ),
         ),

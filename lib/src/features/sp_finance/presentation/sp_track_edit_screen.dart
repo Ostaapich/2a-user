@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/network/api_config.dart';
 import '../../../core/ui/app_colors.dart';
+import '../../../core/utils/locale_text.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/tutorial_card.dart';
 import '../../photos/domain/photo_item.dart';
@@ -213,6 +214,11 @@ class _SpTrackEditScreenState extends ConsumerState<SpTrackEditScreen> {
     _netWeightController = TextEditingController();
     _additionalExpensesController = TextEditingController();
     _noteController = TextEditingController();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(spAssembliesControllerProvider.notifier).loadAssemblies();
+      }
+    });
   }
 
   @override
@@ -479,6 +485,10 @@ class _SpTrackEditScreenState extends ConsumerState<SpTrackEditScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final assembliesState = ref.watch(spAssembliesControllerProvider);
+    if (_track == null && assembliesState.isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
     final topPad = AppLayout.topBarTotalHeight(context);
     final bottomPad = AppLayout.bottomScrollPadding(context);
 
@@ -866,6 +876,13 @@ class _SpTrackEditScreenState extends ConsumerState<SpTrackEditScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(message, style: SpFinanceUi.bodyStyle),
+              OutlinedButton.icon(
+                onPressed: () => ref
+                    .read(spAssembliesControllerProvider.notifier)
+                    .loadAssemblies(),
+                icon: const Icon(Icons.refresh_rounded),
+                label: Text(tr(context, ru: 'Повторить загрузку', zh: '重新加载')),
+              ),
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,

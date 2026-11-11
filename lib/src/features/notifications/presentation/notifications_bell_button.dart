@@ -6,6 +6,7 @@ import 'package:twoalogisticcabineuser/src/core/ui/app_layout.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/blurred_modal_bottom_sheet.dart';
 
 import '../../../core/ui/app_colors.dart';
+import '../../../core/utils/locale_text.dart';
 import '../../../core/ui/pixso_top_menu_surface.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../clients/application/client_codes_controller.dart';
@@ -24,7 +25,7 @@ class NotificationsBellButton extends ConsumerWidget {
     final clientCode = ref.watch(activeClientCodeProvider);
     if (clientCode == null) {
       return Tooltip(
-        message: 'Уведомления',
+        message: tr(context, ru: 'Уведомления', zh: '通知'),
         child: PixsoTopMenuActionSurface(
           child: Icon(
             CupertinoIcons.bell,
@@ -44,7 +45,7 @@ class NotificationsBellButton extends ConsumerWidget {
     final unreadCount = ref.watch(unreadNotificationsCountProvider);
 
     return Tooltip(
-      message: 'Уведомления',
+      message: tr(context, ru: 'Уведомления', zh: '通知'),
       child: Material(
         type: MaterialType.transparency,
         borderRadius: BorderRadius.circular(radius),
@@ -94,6 +95,7 @@ class NotificationsBellButton extends ConsumerWidget {
             ).whenComplete(() => isSheetOpen = false);
           },
           child: Stack(
+            alignment: Alignment.center,
             clipBehavior: Clip.none,
             children: [
               PixsoTopMenuActionSurface(
@@ -106,8 +108,8 @@ class NotificationsBellButton extends ConsumerWidget {
               ),
               if (unreadCount > 0)
                 Positioned(
-                  right: -2,
-                  top: -2,
+                  right: (44 - 30 * scale) / 2 + 2 * scale,
+                  top: (44 - 30 * scale) / 2 + 2 * scale,
                   child: Container(
                     width: 8 * scale,
                     height: 8 * scale,

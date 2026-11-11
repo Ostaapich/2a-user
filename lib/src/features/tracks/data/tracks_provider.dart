@@ -12,6 +12,9 @@ import '../../../core/services/websocket_provider.dart';
 import '../../shell/application/shell_branch_provider.dart';
 import '../domain/track_item.dart';
 import '../domain/photo_report_options.dart';
+import '../../auth/data/auth_provider.dart';
+import '../../loyalty/data/client_loyalty_api.dart';
+import '../../loyalty/data/client_loyalty_provider.dart';
 
 /// Загружает полный список треков клиента для экспорта, независимо от того,
 /// сколько страниц пользователь успел открыть на экране.
@@ -564,7 +567,7 @@ class PaginatedTracksNotifier {
   }
 
   /// Загрузить следующую страницу
-  Future<void> loadMore() async {
+  Future<void> loadMore({int pageSize = _pageSize}) async {
     if (_state.isLoading || !_state.hasMore) return;
 
     final requestFilters = _state.filters;
@@ -573,7 +576,7 @@ class PaginatedTracksNotifier {
     try {
       final result = await _fetchTracks(
         skip: _state.tracks.length,
-        take: _pageSize,
+        take: pageSize.clamp(1, 200),
         filters: requestFilters,
       );
       if (_state.filters != requestFilters) {
@@ -1114,8 +1117,47 @@ class TracksApiService {
     String? wish,
     String? reportType,
     String? expectedPriceUsd,
+    String? loyaltyRewardType,
   }) async {
     lastPhotoRequestErrorCode = null;
+    if (loyaltyRewardType != null) {
+      final auth = _ref.read(authProvider);
+      final agentId = auth.clientData?['agentId'];
+      if (!auth.isLoggedIn || auth.clientId != clientId || agentId is! int) {
+        lastPhotoRequestErrorCode = 'loyalty_identity_changed';
+        return false;
+      }
+      try {
+        await _ref
+            .read(clientLoyaltyApiProvider)
+            .redeem(
+              agentId: agentId,
+              clientId: clientId,
+              trackId: trackId,
+              rewardType: loyaltyRewardType,
+              wish: wish ?? '',
+              isCurrentIdentity: () {
+                if (!_ref.mounted) return false;
+                final current = _ref.read(authProvider);
+                return current.isLoggedIn &&
+                    current.clientId == clientId &&
+                    current.clientData?['agentId'] == agentId;
+              },
+            );
+        if (_ref.mounted) _ref.invalidate(clientLoyaltyProvider);
+        return true;
+      } on LoyaltyRequestException catch (error) {
+        lastPhotoRequestErrorCode = error.code;
+      } on DioException catch (error) {
+        final body = error.response?.data;
+        lastPhotoRequestErrorCode = body is Map
+            ? body['code']?.toString() ?? 'loyalty_request_failed'
+            : 'loyalty_request_failed';
+      } catch (_) {
+        lastPhotoRequestErrorCode = 'loyalty_request_failed';
+      }
+      return false;
+    }
     try {
       debugPrint(
         'Creating photo request: clientId=$clientId, clientCodeId=$clientCodeId, trackId=$trackId, trackNumber=$trackNumber',
@@ -1152,7 +1194,9 @@ class TracksApiService {
         data: {'status': 'cancelled'},
       );
       debugPrint('Cancel photo request response: ${response.statusCode}');
-      return response.statusCode == 200;
+      final success = response.statusCode == 200;
+      if (success && _ref.mounted) _ref.invalidate(clientLoyaltyProvider);
+      return success;
     } on DioException catch (e) {
       debugPrint('Error cancelling photo request: $e');
       debugPrint('Response data: ${e.response?.data}');

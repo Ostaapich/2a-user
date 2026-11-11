@@ -6,8 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/ui/app_background.dart';
-import '../../core/ui/app_colors.dart';
 import '../../core/ui/app_layout.dart';
+import '../../core/utils/locale_text.dart';
 import '../../core/ui/pixso_top_menu_surface.dart';
 import '../../features/clients/presentation/client_switcher_button.dart';
 import '../../features/notifications/application/notifications_controller.dart';
@@ -41,7 +41,7 @@ class AppScaffold extends ConsumerWidget {
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: overlayStyle.copyWith(statusBarColor: Colors.transparent),
       child: Scaffold(
-        resizeToAvoidBottomInset: false,
+        resizeToAvoidBottomInset: true,
         body: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => FocusScope.of(context).unfocus(),
@@ -55,7 +55,16 @@ class AppScaffold extends ConsumerWidget {
                   left: useSideNavigation ? sideNavWidth : 0,
                   top: statusTop,
                 ),
-                child: AppLayout.constrainContent(context, child),
+                // The outer padding already owns the status-bar inset.
+                // Page content must not count it again in header spacing.
+                child: Builder(
+                  builder: (bodyContext) => MediaQuery.removePadding(
+                    // Preserve the keyboard inset already consumed by Scaffold.
+                    context: bodyContext,
+                    removeTop: true,
+                    child: AppLayout.constrainContent(bodyContext, child),
+                  ),
+                ),
               ),
               if (useSideNavigation)
                 AnimatedPositioned(
@@ -160,7 +169,7 @@ class _TopBarContent extends StatelessWidget {
               alignment: Alignment.centerLeft,
               child: TrainingTarget(
                 id: 'nav.code',
-                child: ClientSwitcherButton(),
+                child: SizedBox(height: 44, child: ClientSwitcherButton()),
               ),
             ),
           ),
@@ -175,7 +184,6 @@ class _ActionsPill extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final useSideNavigation = AppLayout.useSideNavigation(context);
     final notifications = ref.watch(notificationsControllerProvider);
     final hasUnreadSupportChat =
         notifications.value?.any(
@@ -185,35 +193,32 @@ class _ActionsPill extends ConsumerWidget {
 
     final scale = AppLayout.compactScale(context);
 
-    return PixsoTopMenuSurface(
-      width: useSideNavigation ? 80 : 116,
-      padding: const EdgeInsets.all(7),
-      child: Material(
-        type: MaterialType.transparency,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (!useSideNavigation) ...[
-              _TopBarActionButton(
-                tooltip: 'Главная',
-                icon: CupertinoIcons.house,
-                highlighted: true,
-                onTap: () => context.go('/'),
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 44),
+      child: PixsoTopMenuSurface(
+        padding: EdgeInsets.zero,
+        child: Material(
+          type: MaterialType.transparency,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const TrainingTarget(
+                id: 'nav.notifications',
+                child: SizedBox(
+                  width: 44,
+                  height: 44,
+                  child: NotificationsBellButton(),
+                ),
               ),
               SizedBox(width: 6 * scale),
+              _TopBarActionButton(
+                tooltip: tr(context, ru: 'Чат поддержки', zh: '客服聊天'),
+                icon: CupertinoIcons.chat_bubble_2,
+                hasBadge: hasUnreadSupportChat,
+                onTap: () => context.go('/support'),
+              ),
             ],
-            const TrainingTarget(
-              id: 'nav.notifications',
-              child: NotificationsBellButton(),
-            ),
-            SizedBox(width: 6 * scale),
-            _TopBarActionButton(
-              tooltip: 'Чат поддержки',
-              icon: CupertinoIcons.chat_bubble_2,
-              hasBadge: hasUnreadSupportChat,
-              onTap: () => context.go('/support'),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -224,7 +229,6 @@ class _TopBarActionButton extends StatelessWidget {
   final String tooltip;
   final IconData icon;
   final bool hasBadge;
-  final bool highlighted;
   final VoidCallback onTap;
 
   const _TopBarActionButton({
@@ -232,7 +236,6 @@ class _TopBarActionButton extends StatelessWidget {
     required this.icon,
     required this.onTap,
     this.hasBadge = false,
-    this.highlighted = false,
   });
 
   static const _contentColor = Color(0xFF2F2F2F);
@@ -242,43 +245,43 @@ class _TopBarActionButton extends StatelessWidget {
     final scale = AppLayout.compactScale(context);
     final radius = 12 * scale;
 
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        type: MaterialType.transparency,
-        borderRadius: BorderRadius.circular(radius),
-        child: InkWell(
+    return SizedBox(
+      width: 44,
+      height: 44,
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          type: MaterialType.transparency,
           borderRadius: BorderRadius.circular(radius),
-          onTap: onTap,
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              PixsoTopMenuActionSurface(
-                highlighted: highlighted,
-                child: Icon(
-                  icon,
-                  size: 18.5 * scale,
-                  color: highlighted ? context.brandPrimary : _contentColor,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(radius),
+            onTap: onTap,
+            child: Stack(
+              alignment: Alignment.center,
+              clipBehavior: Clip.none,
+              children: [
+                PixsoTopMenuActionSurface(
+                  child: Icon(icon, size: 18.5 * scale, color: _contentColor),
                 ),
-              ),
-              if (hasBadge)
-                Positioned(
-                  right: -2,
-                  top: -2,
-                  child: Container(
-                    width: 8 * scale,
-                    height: 8 * scale,
-                    decoration: BoxDecoration(
-                      color: Colors.redAccent,
-                      borderRadius: BorderRadius.circular(99),
-                      border: Border.all(
-                        color: Colors.white,
-                        width: 1.5 * scale,
+                if (hasBadge)
+                  Positioned(
+                    right: (44 - 30 * scale) / 2 + 2 * scale,
+                    top: (44 - 30 * scale) / 2 + 2 * scale,
+                    child: Container(
+                      width: 8 * scale,
+                      height: 8 * scale,
+                      decoration: BoxDecoration(
+                        color: Colors.redAccent,
+                        borderRadius: BorderRadius.circular(99),
+                        border: Border.all(
+                          color: Colors.white,
+                          width: 1.5 * scale,
+                        ),
                       ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

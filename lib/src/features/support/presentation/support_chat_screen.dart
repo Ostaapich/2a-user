@@ -4,6 +4,7 @@ import '../../training/presentation/training_target.dart';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'chat_draft_send.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +18,7 @@ import '../../../core/ui/app_background.dart';
 import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/app_input_decoration.dart';
 import '../../../core/ui/app_layout.dart';
+import '../../../core/ui/app_keyboard_dismiss.dart';
 import '../../../core/ui/fullscreen_image_overlay.dart';
 import '../../../core/ui/pdf_preview_overlay.dart';
 import '../../../core/services/push_notification_service.dart';
@@ -96,7 +98,6 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
     });
 
     // Очищаем уведомления при открытии чата
-    _clearNotifications();
   }
 
   /// Уведомить сервер что чат открыт
@@ -113,10 +114,6 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
     await _notificationService.initialize();
   }
 
-  Future<void> _clearNotifications() async {
-    await _notificationService.cancelAllNotifications();
-  }
-
   void _setScreenActive(bool isActive) {
     if (_isDisposed) return;
     _screenOpenNotifier.set(isActive);
@@ -128,7 +125,6 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
           NotificationType.chatMessage,
         }),
       );
-      unawaited(_clearNotifications());
       unawaited(_notifyServerChatOpened());
       return;
     }
@@ -164,7 +160,6 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
     debugPrint('App lifecycle state changed to: $state');
 
     if (state == AppLifecycleState.resumed) {
-      _clearNotifications();
       // Обновляем сообщения при возврате в приложение
       _chatController.pollNewMessages();
       // Уведомляем сервер что чат снова открыт
@@ -189,19 +184,22 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
     setState(() => _isSendingLocally = true);
     try {
       HapticFeedback.lightImpact();
-      _textController.selection = const TextSelection.collapsed(offset: 0);
-      _textController.clear();
-
       // Собираем ID вложений
       final attachmentIds = pendingAttachments.map((a) => a.id).toList();
 
-      final success = await ref
-          .read(chatControllerProvider.notifier)
-          .sendMessage(
-            text.isEmpty ? 'Файл' : text,
-            attachmentIds: attachmentIds,
-          );
+      final success = await sendChatDraft(
+        controller: _textController,
+        text: text,
+        isMounted: () => mounted,
+        send: () => ref
+            .read(chatControllerProvider.notifier)
+            .sendMessage(
+              text.isEmpty ? tr(context, ru: 'Файл', zh: '文件') : text,
+              attachmentIds: attachmentIds,
+            ),
+      );
 
+      if (!mounted) return;
       if (success) {
         // Очищаем pending attachments
         ref.read(chatControllerProvider.notifier).clearPendingAttachments();
@@ -472,7 +470,8 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
     final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
     final shellBottomInset = AppLayout.bottomBarObstruction(context) + 18;
     final keyboardBottomInset = keyboardInset + 10;
-    final composerBottomInset = keyboardBottomInset > shellBottomInset
+    final composerBottomInset =
+        AppKeyboardDismissRegion.isKeyboardVisibleOf(context)
         ? keyboardBottomInset
         : shellBottomInset;
 

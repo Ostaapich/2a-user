@@ -1,4 +1,12 @@
+import 'package:twoalogisticcabineuser/src/features/screen_translation/presentation/screen_translation_section.dart';
 import 'package:flutter/material.dart';
+import 'package:twoalogisticcabineuser/src/features/shop/data/shop_availability_provider.dart';
+import 'package:twoalogisticcabineuser/src/features/shell/presentation/desktop_side_nav.dart';
+import 'package:twoalogisticcabineuser/src/features/clients/domain/client_codes_state.dart';
+import 'package:twoalogisticcabineuser/src/features/notifications/application/notifications_controller.dart';
+import 'package:twoalogisticcabineuser/src/features/notifications/domain/notification_item.dart';
+import 'package:twoalogisticcabineuser/src/features/training/presentation/training_target.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -38,7 +46,163 @@ class _MenuApi implements ApiClient {
       throw StateError('No network expected');
 }
 
+class _MenuCodes extends ClientCodesController {
+  @override
+  Future<ClientCodesState> build() async =>
+      const ClientCodesState(codes: [], activeCode: null);
+}
+
+class _MenuNotifications extends NotificationsController {
+  @override
+  Future<List<NotificationItem>> build() async => const [];
+}
+
 void main() {
+  testWidgets('search finds grouped service and preserves its navigation', (
+    tester,
+  ) async {
+    final router = GoRouter(
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => Scaffold(
+            body: TextButton(
+              onPressed: () => showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                builder: (_) =>
+                    const MoreSheet(screenTranslationEnabled: false),
+              ),
+              child: const Text('Open menu'),
+            ),
+          ),
+        ),
+        GoRoute(
+          path: '/calculator',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Calculator opened')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(_MenuApi()),
+          authProvider.overrideWith(_MenuAuth.new),
+          activeClientCodeProvider.overrideWithValue(null),
+          clientProfileProvider.overrideWithValue(const AsyncData(null)),
+          selfBuyoutAvailabilityProvider.overrideWithValue(
+            const AsyncLoading(),
+          ),
+          garageAvailabilityProvider.overrideWithValue(const AsyncLoading()),
+          clientPartnerProgramProvider.overrideWithValue(const AsyncData(null)),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.tap(find.text('Open menu'));
+    await tester.pumpAndSettle();
+    for (final title in [
+      'Обучение',
+      'Профиль',
+      'Реферальная программа',
+      'Выкуп по бланку',
+      'Совместные покупки',
+      'Поиск трека без кода',
+      'Новости',
+      'Правила',
+      'Тарифы',
+      'Калькулятор',
+    ]) {
+      expect(find.text(title), findsOneWidget);
+    }
+    expect(find.text('Диагностика сети'), findsNothing);
+    expect(find.text('Сообщить о проблеме'), findsNothing);
+    await tester.enterText(
+      find.byKey(const ValueKey('more-menu-search')),
+      'расчет',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Калькулятор'), findsOneWidget);
+    expect(find.text('Профиль'), findsNothing);
+    expect(find.text('Чат поддержки'), findsNothing);
+    await tester.ensureVisible(find.text('Калькулятор'));
+    await tester.tap(find.text('Калькулятор'));
+    await tester.pumpAndSettle();
+    expect(find.text('Calculator opened'), findsOneWidget);
+    expect(
+      router.routerDelegate.currentConfiguration.last.matchedLocation,
+      '/calculator',
+    );
+  });
+
+  testWidgets(
+    'desktop menu removes report and diagnostics but preserves support and update',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1200, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) => const Scaffold(
+              body: Row(
+                children: [
+                  SizedBox(width: 280, child: DesktopSideNav()),
+                  Expanded(child: SizedBox()),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(_MenuApi()),
+            authProvider.overrideWith(_MenuAuth.new),
+            clientCodesControllerProvider.overrideWith(_MenuCodes.new),
+            shopAvailabilityProvider.overrideWithValue(const AsyncLoading()),
+            notificationsControllerProvider.overrideWith(
+              _MenuNotifications.new,
+            ),
+            activeClientCodeProvider.overrideWithValue(null),
+            selfBuyoutAvailabilityProvider.overrideWithValue(
+              const AsyncLoading(),
+            ),
+            garageAvailabilityProvider.overrideWithValue(const AsyncLoading()),
+            clientPartnerProgramProvider.overrideWithValue(
+              const AsyncData(null),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      await tester.pumpAndSettle();
+      for (final title in [
+        'Диагностика',
+        'Диагностика сети',
+        'Проблема',
+        'Сообщить о проблеме',
+      ]) {
+        expect(find.text(title), findsNothing);
+      }
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is TrainingTarget && widget.id == 'menu.report',
+        ),
+        findsNothing,
+      );
+      expect(find.text('Поддержка'), findsOneWidget);
+      expect(find.text('Обновление'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      router.dispose();
+    },
+  );
+
   group('shouldShowManualUpdateMenu', () {
     test('shows update check for direct Android builds', () {
       expect(
@@ -72,7 +236,7 @@ void main() {
   });
 
   testWidgets(
-    'iOS translator sits right of self-buyout and keeps session owner mounted',
+    'iOS 26 hides translator; iOS 27 shows it beside self-buyout and keeps session owner mounted',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -90,10 +254,14 @@ void main() {
           null,
         ),
       );
+      var iosVersion = '26.9';
       final api = _MenuApi();
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            screenTranslationIOSVersionProvider.overrideWith(
+              (ref) async => iosVersion,
+            ),
             apiClientProvider.overrideWithValue(api),
             authProvider.overrideWith(_MenuAuth.new),
             activeClientCodeProvider.overrideWithValue(null),
@@ -118,6 +286,15 @@ void main() {
           ),
         ),
       );
+      await tester.pump();
+      expect(find.text('Переводчик'), findsNothing);
+      expect(api.tokenReads, 0);
+      expect(calls, isEmpty);
+      iosVersion = '27.0';
+      ProviderScope.containerOf(
+        tester.element(find.byType(MoreSheet)),
+      ).invalidate(screenTranslationIOSVersionProvider);
+      await tester.pump();
       await tester.pump();
       final selfBuyout = tester.getCenter(find.text('Самовыкуп'));
       final translator = tester.getCenter(find.text('Переводчик'));

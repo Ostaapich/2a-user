@@ -6,6 +6,7 @@ import '../../../core/ui/app_colors.dart';
 import '../../../core/utils/locale_text.dart';
 import '../data/training_tour_controller.dart';
 import 'training_target.dart';
+import 'training_modal_ownership.dart';
 import 'training_tour_steps.dart';
 import 'training_ui.dart';
 
@@ -17,6 +18,7 @@ class TrainingTourOverlay extends StatefulWidget {
   final Widget child;
   final TrainingTourController controller;
   final TrainingTargetRegistry registry;
+  final TrainingModalOwnership? modalOwnership;
   final TrainingTourStep step;
   final TrainingServiceAccess access;
   final String currentPath;
@@ -32,6 +34,7 @@ class TrainingTourOverlay extends StatefulWidget {
     required this.child,
     required this.controller,
     required this.registry,
+    this.modalOwnership,
     required this.step,
     required this.access,
     required this.currentPath,
@@ -60,6 +63,7 @@ class _TrainingTourOverlayState extends State<TrainingTourOverlay> {
   BuildContext? _lastTargetContext;
   TrainingTourPreparation? _preparation;
   bool _collapsed = false;
+  bool _previousWindowBlocked = false;
   bool _scrolled = false;
   bool _waitExpired = false;
   bool _targetSeen = false;
@@ -83,6 +87,7 @@ class _TrainingTourOverlayState extends State<TrainingTourOverlay> {
       _prepareStep();
     } else if (oldWidget.currentPath != widget.currentPath) {
       _cancelAutomatic();
+      unawaited(widget.modalOwnership?.closeOwned());
       _target = null;
       _lastTargetContext = null;
       _preparation = null;
@@ -104,10 +109,13 @@ class _TrainingTourOverlayState extends State<TrainingTourOverlay> {
     _targetSeen = false;
     _collapsed = false;
     final id = widget.step.id;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final closed = await widget.modalOwnership?.closeOwned() ?? true;
       if (!mounted || widget.step.id != id || widget.controller.complete) {
         return;
       }
+      setState(() => _previousWindowBlocked = !closed);
+      if (!closed) return;
       if (_coachScroll.hasClients) _coachScroll.jumpTo(0);
       if (widget.access == TrainingServiceAccess.available &&
           !widget.step.matchesPath(widget.currentPath)) {
@@ -135,6 +143,11 @@ class _TrainingTourOverlayState extends State<TrainingTourOverlay> {
 
   void _locate() {
     if (!mounted || widget.controller.currentId != widget.step.id) return;
+    if (_previousWindowBlocked &&
+        !(widget.modalOwnership?.hasOwnedActive ?? false)) {
+      setState(() => _previousWindowBlocked = false);
+      if (!_onRoute) widget.navigate(widget.step.route);
+    }
     if (!widget.controller.active ||
         !_onRoute ||
         widget.access != TrainingServiceAccess.available ||
@@ -144,6 +157,11 @@ class _TrainingTourOverlayState extends State<TrainingTourOverlay> {
         setState(() => _target = null);
       }
       return;
+    }
+    if (_previousWindowBlocked) {
+      if (widget.modalOwnership?.hasOwnedActive ?? false) return;
+      setState(() => _previousWindowBlocked = false);
+      if (!_onRoute) widget.navigate(widget.step.route);
     }
     final advanceTarget = widget.step.advanceTargetId;
     if (widget.advanceRequested ||
@@ -293,7 +311,12 @@ class _TrainingTourOverlayState extends State<TrainingTourOverlay> {
       final action = widget.registry.activationFor(id, targetContext);
       if (action == null) return;
       _automaticAttempts[id] = (_automaticAttempts[id] ?? 0) + 1;
-      action();
+      final ownership = widget.modalOwnership;
+      if (ownership == null) {
+        action();
+      } else {
+        ownership.runOwned(action);
+      }
     });
   }
 
@@ -302,10 +325,22 @@ class _TrainingTourOverlayState extends State<TrainingTourOverlay> {
     _cancelAutomatic();
     _timer?.cancel();
     _coachScroll.dispose();
+    // Defer Navigator operations until the tree has finished this transition.
+    final ownership = widget.modalOwnership;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(ownership?.closeOwned());
+    });
     super.dispose();
   }
 
   String? _notice() {
+    if (_previousWindowBlocked) {
+      return tr(
+        context,
+        ru: 'Закройте открытое окно предыдущего шага, чтобы продолжить экскурсию. Несохранённая форма не закрывается автоматически.',
+        zh: '请先关闭上一步打开的窗口再继续导览。未保存的表单不会被自动关闭。',
+      );
+    }
     if (widget.access == TrainingServiceAccess.checking) {
       return tr(
         context,

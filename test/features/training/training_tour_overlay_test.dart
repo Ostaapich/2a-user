@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:twoalogisticcabineuser/src/features/training/data/training_tour_controller.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_target.dart';
+import 'package:twoalogisticcabineuser/src/features/training/presentation/training_modal_ownership.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_tour_overlay.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_tour_steps.dart';
 
@@ -40,6 +41,7 @@ const _steps = [
 class _Harness extends StatefulWidget {
   final TrainingTourController controller;
   final TrainingTargetRegistry registry;
+  final TrainingModalOwnership? ownership;
   final TrainingServiceAccess access;
   final bool showTarget;
   final bool showPreparation;
@@ -53,6 +55,7 @@ class _Harness extends StatefulWidget {
   const _Harness({
     required this.controller,
     required this.registry,
+    this.ownership,
     required this.access,
     required this.showTarget,
     this.showPreparation = false,
@@ -117,6 +120,7 @@ class _HarnessState extends State<_Harness> {
         controller: widget.controller,
         guidedPractice: widget.guidedPractice,
         registry: widget.registry,
+        modalOwnership: widget.ownership,
         step: _steps[widget.controller.index],
         access: widget.access,
         currentPath: path,
@@ -164,6 +168,8 @@ void main() {
     bool automatic = false,
     bool guidedPractice = false,
     VoidCallback? safeOpen,
+    TrainingModalOwnership? ownership,
+    GlobalKey<NavigatorState>? navigatorKey,
     String locale = 'ru',
     ValueChanged<String>? navigate,
     VoidCallback? businessAction,
@@ -172,12 +178,15 @@ void main() {
       ProviderScope(
         overrides: [trainingTargetRegistryProvider.overrideWithValue(registry)],
         child: MaterialApp(
+          navigatorKey: navigatorKey,
+          navigatorObservers: [if (ownership != null) ownership],
           locale: Locale(locale),
           supportedLocales: const [Locale('ru'), Locale('zh')],
           localizationsDelegates: GlobalMaterialLocalizations.delegates,
           home: _Harness(
             controller: controller,
             registry: registry,
+            ownership: ownership,
             access: access,
             showTarget: target,
             showPreparation: preparation,
@@ -195,6 +204,88 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
   }
+
+  testWidgets(
+    'tour cleanup respects unsaved-form PopScope even for an owned popup',
+    (tester) async {
+      final controller = await createController();
+      final ownership = TrainingModalOwnership();
+      final nav = GlobalKey<NavigatorState>();
+      await host(
+        tester,
+        controller,
+        TrainingTargetRegistry(),
+        ownership: ownership,
+        navigatorKey: nav,
+      );
+      ownership.runOwned(() {
+        showDialog<void>(
+          context: nav.currentContext!,
+          builder: (_) => const PopScope(
+            canPop: false,
+            child: AlertDialog(content: Text('Unsaved user edits')),
+          ),
+        );
+      });
+      await tester.pumpAndSettle();
+      expect(await ownership.closeOwned(), isFalse);
+      expect(find.text('Unsaved user edits'), findsOneWidget);
+      nav.currentState!.pop();
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'tour dismisses its own previous popup on step change and keeps user windows',
+    (tester) async {
+      final controller = await createController();
+      final registry = TrainingTargetRegistry();
+      final ownership = TrainingModalOwnership();
+      final nav = GlobalKey<NavigatorState>();
+      await host(
+        tester,
+        controller,
+        registry,
+        target: false,
+        preparation: true,
+        automatic: true,
+        ownership: ownership,
+        navigatorKey: nav,
+        safeOpen: () {
+          showDialog<void>(
+            context: nav.currentContext!,
+            builder: (_) =>
+                const AlertDialog(content: Text('Tour address dialog')),
+          );
+        },
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 1300));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Tour address dialog'), findsOneWidget);
+      expect(
+        ownership.hasOwnedActive,
+        isTrue,
+        reason: 'auto-open should be owned',
+      );
+      controller.next();
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(find.text('Tour address dialog'), findsNothing);
+      showDialog<void>(
+        context: nav.currentContext!,
+        builder: (_) => const AlertDialog(content: Text('User form')),
+      );
+      await tester.pumpAndSettle();
+      await ownership.closeOwned();
+      await tester.pumpAndSettle();
+      expect(find.text('User form'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    },
+  );
 
   testWidgets(
     'highlights before safe auto opening and never presses business action',

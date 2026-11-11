@@ -271,10 +271,16 @@ struct SnapshotViewportPages {
   var duration: Double { Double(boxes.count) * Self.secondsPerPage }
 
   init(width: Double, height: Double, aspect: Double = 16.0 / 9.0,
-       overlap: Double = 0.2, cap: Int = 8) {
+       overlap: Double = 0.2, cap: Int = 8, halfScreen: Bool = false) {
     guard width.isFinite, height.isFinite, width > 0, height > 0,
           aspect.isFinite, aspect > 0, overlap.isFinite, overlap >= 0, overlap < 1,
           cap > 0 else { boxes = []; return }
+    if halfScreen {
+      guard cap >= 2 else { boxes = []; return }
+      boxes = [OCRBox(x: 0, y: 0, width: 1, height: 0.5),
+               OCRBox(x: 0, y: 0.5, width: 1, height: 0.5)]
+      return
+    }
     let stripHeight = min(1, (width / height) / aspect)
     let step = stripHeight * (1 - overlap)
     guard stripHeight > 0, step > 0 else { boxes = []; return }
@@ -305,5 +311,260 @@ struct SnapshotViewportPages {
     guard duration > 0 else { return 0 }
     if seconds.isNaN { return 0 }
     return min(duration - 0.000001, max(0, seconds))
+  }
+}
+
+/// Buffer geometry for one half of a physical screen. This does not prescribe
+/// the system PiP window size. Even output height supports the video renderer.
+struct HalfScreenPiPLayout {
+  let width: Int
+  let height: Int
+  let captureWidth: Int
+  let captureHeight: Int
+
+  init?(screenWidth: Double, screenHeight: Double, safeAreaTop: Double = 0, safeAreaBottom: Double = 0) {
+    guard screenWidth.isFinite, screenHeight.isFinite,
+          screenWidth > 0, screenHeight > 0,
+          screenWidth <= 8192, screenHeight <= 8192,
+          screenWidth * screenHeight <= 16_777_216 else { return nil }
+    guard safeAreaTop.isFinite, safeAreaBottom.isFinite, safeAreaTop >= 0, safeAreaBottom >= 0,
+          safeAreaTop + safeAreaBottom < screenHeight else { return nil }
+    let usableHeight = screenHeight - safeAreaTop - safeAreaBottom
+    let outputWidth = 960
+    let requestedHeight = Double(outputWidth) * usableHeight / (2 * screenWidth)
+    guard requestedHeight.isFinite, requestedHeight > 0 else { return nil }
+    let evenHeight = (requestedHeight / 2).rounded() * 2
+    guard evenHeight >= 2, evenHeight <= 8192,
+          Double(outputWidth) * evenHeight <= 16_777_216 else { return nil }
+    let sourceWidth = 720
+    let requestedCaptureHeight = Double(sourceWidth) * screenHeight / screenWidth
+    guard requestedCaptureHeight.isFinite, requestedCaptureHeight > 0 else { return nil }
+    let evenCaptureHeight = (requestedCaptureHeight / 2).rounded() * 2
+    guard evenCaptureHeight >= 2, evenCaptureHeight <= 8192,
+          Double(sourceWidth) * evenCaptureHeight <= 16_777_216 else { return nil }
+    width = outputWidth
+    height = Int(evenHeight)
+    captureWidth = sourceWidth
+    captureHeight = Int(evenCaptureHeight)
+  }
+}
+
+/// Position inferred from a protected dark PiP mask, never from a public window
+/// coordinate. A naturally identical rounded black card is indistinguishable.
+enum PiPVerticalPosition: String { case top, bottom }
+
+/// Full-width source region opposite the confirmed protected PiP rectangle.
+/// The actual window may cross the 50% line; leave a 2%-of-screen guard band
+/// rather than showing any protected pixels at the edge of the translation.
+enum PiPVisibleRegion {
+  static func box(position: PiPVerticalPosition, mask: OCRBox?) -> OCRBox? {
+    guard let mask, mask.x.isFinite, mask.y.isFinite, mask.width.isFinite, mask.height.isFinite,
+          mask.x >= 0, mask.y >= 0, mask.width > 0, mask.height > 0,
+          mask.x + mask.width <= 1, mask.y + mask.height <= 1 else { return nil }
+    switch position {
+    case .bottom:
+      let end = min(0.5, mask.y - 0.02)
+      guard end > 0 else { return nil }
+      return OCRBox(x: 0, y: 0, width: 1, height: end)
+    case .top:
+      let start = max(0.5, mask.y + mask.height + 0.02)
+      guard start < 1 else { return nil }
+      return OCRBox(x: 0, y: start, width: 1, height: 1 - start)
+    }
+  }
+}
+
+struct PiPPositionDetector {
+  private struct Candidate {
+    let side: PiPVerticalPosition
+    let x: Double, y: Double, width: Double, height: Double
+  }
+  private var gridWidth = 0
+  private var gridHeight = 0
+  private var sourceOrientation: UInt32?
+  private var confirmed: PiPVerticalPosition?
+  private(set) var confirmedMask: OCRBox?
+  private var pending: Candidate?
+  private var pendingSince: TimeInterval = 0
+  private var observations = 0
+  private var lastTime: TimeInterval?
+  private var componentDiagnostics: [[String: Any]] = []
+  private var candidateCount = 0
+  private var observationGap: TimeInterval = 0
+  private var topBlackFraction = 0.0, bottomBlackFraction = 0.0
+  private var solidRectangles: [[String: Any]] = []
+
+  /// Bounded geometry/counters only: no frame pixels or recognized content.
+  var diagnostics: [String: Any] {
+    ["confirmed": confirmed?.rawValue ?? "unknown", "pendingCount": observations,
+     "candidateCount": candidateCount, "observationGapMs": observationGap * 1000,
+     "components": componentDiagnostics, "solidRectangles": solidRectangles,
+     "topBlackFraction": topBlackFraction, "bottomBlackFraction": bottomBlackFraction]
+  }
+
+  /// Sampler owns orientation; equal-size flips must reset just like rotations.
+  mutating func prepareOrientation(_ rawValue: UInt32) {
+    if let old = sourceOrientation, old != rawValue { resetTracking() }
+    sourceOrientation = rawValue
+  }
+
+  private mutating func resetTracking() {
+    confirmed = nil; confirmedMask = nil; pending = nil; observations = 0; lastTime = nil
+  }
+
+  mutating func observe(width: Int, height: Int, luma: [UInt8], expectedAspect: Double,
+                        now: TimeInterval) -> PiPVerticalPosition? {
+    guard width > 0, height > 0, width <= 512, height <= 512,
+          width <= 80_000 / height, luma.count == width * height,
+          expectedAspect.isFinite, expectedAspect > 0, now.isFinite else {
+      pending = nil; observations = 0
+      return confirmed
+    }
+    if gridWidth != width || gridHeight != height {
+      resetTracking(); gridWidth = width; gridHeight = height
+    }
+    observationGap = lastTime.map { max(0, now - $0) } ?? 0
+    if let lastTime, now < lastTime || now - lastTime > 3 { pending = nil; observations = 0 }
+    lastTime = now
+    let middle = width * (height / 2)
+    topBlackFraction = Double(luma[..<middle].filter { $0 <= 12 }.count) / Double(max(1, middle))
+    bottomBlackFraction = Double(luma[middle...].filter { $0 <= 12 }.count) / Double(max(1, luma.count - middle))
+    let detection = Self.candidates(width: width, height: height, luma: luma, aspect: expectedAspect)
+    let candidates = detection.candidates
+    componentDiagnostics = detection.diagnostics
+    candidateCount = candidates.count
+    solidRectangles = candidates.prefix(4).map { ["side": $0.side.rawValue, "x": $0.x, "y": $0.y,
+      "width": $0.width, "height": $0.height] }
+    guard candidates.count == 1, let candidate = candidates.first else {
+      pending = nil; observations = 0
+      return confirmed
+    }
+    let continuous = pending.map { previous in
+      previous.side == candidate.side && abs(previous.x - candidate.x) <= 0.035 &&
+        abs(previous.y - candidate.y) <= 0.035 &&
+        abs(previous.width - candidate.width) <= 0.04 && abs(previous.height - candidate.height) <= 0.04
+    } ?? false
+    if continuous { observations += 1 }
+    else { pendingSince = now; observations = 1 }
+    pending = candidate
+    if observations >= 3 && now - pendingSince >= 0.5 {
+      confirmed = candidate.side
+      confirmedMask = OCRBox(x: candidate.x, y: candidate.y, width: candidate.width, height: candidate.height)
+    }
+    return confirmed
+  }
+
+  private static func candidates(width: Int, height: Int, luma: [UInt8], aspect: Double)
+    -> (candidates: [Candidate], diagnostics: [[String: Any]]) {
+    let black: UInt8 = 12
+    var visited = [Bool](repeating: false, count: luma.count)
+    var queue: [Int] = []
+    var result: [Candidate] = []
+    var reports: [(area: Int, data: [String: Any])] = []
+    func evaluate(left: Int, right: Int, top: Int, bottom: Int, darkCount: Int) {
+      let w = right - left + 1, h = bottom - top + 1
+      let wf = Double(w) / Double(width), hf = Double(h) / Double(height)
+      let fill = Double(darkCount) / Double(w * h)
+      // Ignore glyph-sized components in metadata as well as in detection.
+      guard wf >= 0.15, hf >= 0.08 else { return }
+      var report: [String: Any] = ["x": Double(left) / Double(width), "y": Double(top) / Double(height),
+        "width": wf, "height": hf, "fill": fill, "aspect": Double(w) / Double(h)]
+      func reject(_ reason: String) {
+        report["reason"] = reason; reports.append((w * h, report))
+      }
+      guard w >= 8, h >= 8, wf >= 0.2, hf >= 0.1, hf <= 0.65 else { reject("size"); return }
+      // A full-width mask may reach the display edge. A narrow clipped/stashed
+      // window cannot be reconstructed reliably and remains ambiguous.
+      let touchesEdge = left == 0 || top == 0 || right + 1 == width || bottom + 1 == height
+      guard !touchesEdge || wf >= 0.9 else { reject("clipped"); return }
+      guard Double(min(left, width - right - 1)) / Double(width) <= 0.12,
+            Double(min(top, height - bottom - 1)) / Double(height) <= 0.12 else { reject("edge"); return }
+      guard abs(Double(w) / Double(h) / aspect - 1) <= 0.25 else { reject("aspect"); return }
+      guard fill >= 0.9 else { reject("fill"); return }
+      let center = Double(top + bottom + 1) / (2 * Double(height))
+      let side: PiPVerticalPosition
+      if center < 0.45 { side = .top } else if center > 0.55 { side = .bottom }
+      else { reject("middle"); return }
+      // Capture protection can produce square corners even for rounded PiP.
+      // Verify a solid interior; do not require bright corner pixels.
+      let insetX = max(1, w / 5), insetY = max(1, h / 5)
+      var inner = 0, innerBlack = 0, innerTotal = 0
+      for y in (top + insetY)...(bottom - insetY) {
+        for x in (left + insetX)...(right - insetX) {
+          inner += 1; innerTotal += Int(luma[y * width + x])
+          if luma[y * width + x] <= black { innerBlack += 1 }
+        }
+      }
+      report["innerBlackFraction"] = Double(innerBlack) / Double(inner)
+      guard Double(innerBlack) / Double(inner) >= 0.98 else { reject("interior"); return }
+      // A band tolerates antialiasing/shadow and surrounding dark UI. The
+      // comparison is relative to the protected interior, not a white theme.
+      let band = max(2, min(w, h) / 16)
+      let innerMean = Double(innerTotal) / Double(inner)
+      var outsideCount = 0, outsideTotal = 0, contrastCount = 0
+      for y in max(0, top - band)...min(height - 1, bottom + band) {
+        for x in max(0, left - band)...min(width - 1, right + band) {
+          if x >= left && x <= right && y >= top && y <= bottom { continue }
+          let value = Int(luma[y * width + x])
+          outsideCount += 1; outsideTotal += value
+          if Double(value) >= max(20, innerMean + 12) { contrastCount += 1 }
+        }
+      }
+      let outsideMean = outsideCount > 0 ? Double(outsideTotal) / Double(outsideCount) : 0
+      let contrast = outsideCount > 0 ? Double(contrastCount) / Double(outsideCount) : 0
+      report["outsideMean"] = outsideMean; report["contrastFraction"] = contrast
+      guard outsideCount > 0, outsideMean - innerMean >= 12, contrast >= 0.45 else { reject("contrast"); return }
+      report["reason"] = "accepted"; reports.append((w * h, report))
+      let candidate = Candidate(side: side, x: Double(left) / Double(width), y: Double(top) / Double(height), width: wf, height: hf)
+      // Histogram rectangles may differ slightly inside one rounded mask. Merge
+      // overlapping candidates for that same window, never distinct top/bottom.
+      if !result.contains(where: { existing in
+        guard existing.side == candidate.side else { return false }
+        let overlapW = max(0, min(existing.x + existing.width, candidate.x + candidate.width) - max(existing.x, candidate.x))
+        let overlapH = max(0, min(existing.y + existing.height, candidate.y + candidate.height) - max(existing.y, candidate.y))
+        let intersection = overlapW * overlapH
+        return intersection / min(existing.width * existing.height, candidate.width * candidate.height) >= 0.7
+      }) { result.append(candidate) }
+    }
+    for start in luma.indices where !visited[start] && luma[start] <= black {
+      queue.removeAll(keepingCapacity: true); queue.append(start); visited[start] = true
+      var cursor = 0, left = start % width, right = left, top = start / width, bottom = top
+      func visit(_ index: Int) {
+        if !visited[index] && luma[index] <= black { visited[index] = true; queue.append(index) }
+      }
+      while cursor < queue.count {
+        let index = queue[cursor], x = index % width, y = index / width
+        cursor += 1
+        left = min(left, x); right = max(right, x); top = min(top, y); bottom = max(bottom, y)
+        if x > 0 { visit(index - 1) }; if x + 1 < width { visit(index + 1) }
+        if y > 0 { visit(index - width) }; if y + 1 < height { visit(index + width) }
+      }
+      evaluate(left: left, right: right, top: top, bottom: bottom, darkCount: queue.count)
+    }
+    // A protected mask can touch black page artwork. Its connected component
+    // then has the wrong bounding aspect/fill. Extract maximal solid interiors
+    // with a bounded O(width*height) histogram instead of using that merged box.
+    var heights = [Int](repeating: 0, count: width)
+    for y in 0..<height {
+      for x in 0..<width { heights[x] = luma[y * width + x] <= black ? heights[x] + 1 : 0 }
+      var stack: [(start: Int, height: Int)] = []
+      for x in 0...width {
+        let current = x < width ? heights[x] : 0
+        var start = x
+        while let last = stack.last, last.height > current {
+          _ = stack.popLast(); start = last.start
+          let w = x - last.start, h = last.height
+          guard w >= 8, h >= 8, Double(w) / Double(width) >= 0.2,
+                Double(h) / Double(height) >= 0.1,
+                abs(Double(w) / Double(h) / aspect - 1) <= 0.25 else { continue }
+          // Only vertically maximal rectangles: partial rows inside a whole
+          // black screen must not invent PiP-sized candidate windows.
+          if y + 1 < height && (last.start..<x).allSatisfy({ luma[(y + 1) * width + $0] <= black }) { continue }
+          evaluate(left: last.start, right: x - 1, top: y - h + 1, bottom: y, darkCount: w * h)
+        }
+        if current > 0 && (stack.last?.height ?? 0) < current { stack.append((start, current)) }
+      }
+    }
+    return (result, reports.sorted { $0.area > $1.area }.prefix(4).map { $0.data })
   }
 }

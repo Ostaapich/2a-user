@@ -1,4 +1,7 @@
+import '../../../core/services/analytics_service.dart';
 import 'dart:async';
+import 'dart:convert';
+import 'package:uuid/uuid.dart';
 
 import 'package:flutter/material.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
@@ -12,12 +15,17 @@ import '../../../core/network/api_client.dart';
 import '../../../core/services/agent_domain_resolver.dart';
 import '../../../core/ui/app_background.dart';
 import '../../../core/ui/app_colors.dart';
-import '../../../core/ui/phone_input_field.dart';
 import '../../../core/utils/locale_text.dart';
 import '../data/client_partner_invite_provider.dart';
 import '../data/partner_link_provider.dart';
+import '../data/auth_input_safety.dart';
+import '../data/auth_form_exit_guards.dart';
+import '../data/registration_draft.dart';
+import '../../../core/ui/unsaved_changes_guard.dart';
+import '../../../core/ui/phone_input_field.dart';
 import '../data/registration_provider.dart';
 import 'auth_visuals.dart';
+import 'auth_verification_help.dart';
 
 enum _PhoneVerificationStatus { idle, waiting, verified }
 
@@ -30,7 +38,13 @@ class RegisterScreen extends ConsumerStatefulWidget {
   ConsumerState<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _RegisterScreenState extends ConsumerState<RegisterScreen> {
+class _RegisterScreenState extends ConsumerState<RegisterScreen>
+    with WidgetsBindingObserver {
+  late final RegistrationDraftStore _draftStore;
+  late final AuthFormExitGuards _exitGuards;
+  bool _leaving = false;
+  String? _ordinaryRegistrationPayload;
+  String _ordinaryRegistrationKey = const Uuid().v4();
   final _nameCtrl = TextEditingController();
   late final PhoneController _phoneCtrl;
   final _emailCtrl = TextEditingController();
@@ -57,13 +71,30 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   Timer? _phoneVerificationPollTimer;
   Timer? _phoneVerificationCountdownTimer;
   int _phoneVerificationSecondsLeft = 300;
+  DateTime? _phoneVerificationExpiresAt;
 
   @override
   void initState() {
     super.initState();
-    _agentCodeCtrl.text = ref.read(currentAgentDomainProvider) ?? '';
+    AnalyticsService.trackFunnel(
+      WorkflowAction.registration,
+      WorkflowStage.viewed,
+    );
+    WidgetsBinding.instance.addObserver(this);
+    AppToast.hide();
+    _draftStore = ref.read(registrationDraftStoreProvider);
+    _exitGuards = ref.read(authFormExitGuardsProvider)
+      ..registration = _confirmExit;
+    final draft = _draftStore.value;
+    _nameCtrl.text = draft?.name ?? '';
+    _emailCtrl.text = draft?.email ?? '';
+    _agentCodeCtrl.text =
+        draft?.agentCode ?? ref.read(currentAgentDomainProvider) ?? '';
+    _referralCodeCtrl.text = draft?.referralCode ?? '';
     _phoneCtrl = PhoneController(
-      initialValue: const PhoneNumber(isoCode: IsoCode.RU, nsn: ''),
+      initialValue:
+          PhoneInputField.parse(draft?.phone) ??
+          const PhoneNumber(isoCode: IsoCode.RU, nsn: ''),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(registrationProvider.notifier).reset();
@@ -72,6 +103,21 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
   @override
   void dispose() {
+    if (_exitGuards.registration == _confirmExit) {
+      _exitGuards.registration = null;
+    }
+    if (_draftStore.authenticated) {
+      _draftStore.clear();
+    } else {
+      _draftStore.value = RegistrationContactDraft(
+        name: _nameCtrl.text,
+        phone: _normalizePhoneForApi() ?? _phoneCtrl.value.international,
+        email: _emailCtrl.text,
+        agentCode: _agentCodeCtrl.text,
+        referralCode: _referralCodeCtrl.text,
+      );
+    }
+    WidgetsBinding.instance.removeObserver(this);
     _cancelPhoneVerificationTimers();
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
@@ -81,6 +127,19 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     _agentCodeCtrl.dispose();
     _referralCodeCtrl.dispose();
     super.dispose();
+  }
+
+  Future<bool> _confirmExit() async {
+    if (_leaving || ref.read(registrationProvider).isLoading) return false;
+    if (_passwordCtrl.text.isEmpty && _confirmPasswordCtrl.text.isEmpty) {
+      return true;
+    }
+    _leaving = true;
+    try {
+      return await confirmDiscardChanges(context);
+    } finally {
+      _leaving = false;
+    }
   }
 
   void _cancelPhoneVerificationTimers() {
@@ -174,6 +233,12 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           _pendingPhoneVerificationToken = token;
           _callPhone = callPhone;
           _callPhonePretty = data['callPhonePretty'] as String? ?? callPhone;
+          _phoneVerificationExpiresAt =
+              DateTime.tryParse(data['expiresAt']?.toString() ?? '') ??
+              DateTime.now().add(const Duration(minutes: 5));
+          _phoneVerificationSecondsLeft = verificationSecondsLeft(
+            _phoneVerificationExpiresAt!,
+          );
           _phoneVerificationStatus = _PhoneVerificationStatus.waiting;
           _isPhoneVerificationLoading = false;
         });
@@ -205,17 +270,38 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     _phoneVerificationCountdownTimer?.cancel();
     _phoneVerificationCountdownTimer = Timer.periodic(
       const Duration(seconds: 1),
-      (_) {
-        if (!mounted) return;
-        if (_phoneVerificationSecondsLeft > 0) {
-          setState(() => _phoneVerificationSecondsLeft--);
-        } else {
-          _resetPhoneVerification(
-            error: 'Время проверки истекло. Запросите новый звонок.',
-          );
-        }
-      },
+      (_) => _refreshVerificationDeadline(),
     );
+  }
+
+  void _refreshVerificationDeadline() {
+    if (!mounted ||
+        _phoneVerificationStatus != _PhoneVerificationStatus.waiting) {
+      return;
+    }
+    final seconds = verificationSecondsLeft(
+      _phoneVerificationExpiresAt ?? DateTime.now(),
+    );
+    if (seconds == 0) {
+      _resetPhoneVerification(
+        error: tr(
+          context,
+          ru: 'Время проверки истекло. Запросите новый звонок.',
+          zh: '验证已过期，请重新请求通话。',
+        ),
+      );
+    } else {
+      setState(() => _phoneVerificationSecondsLeft = seconds);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    _refreshVerificationDeadline();
+    if (_phoneVerificationStatus == _PhoneVerificationStatus.waiting) {
+      unawaited(_checkPhoneVerification());
+    }
   }
 
   Future<void> _checkPhoneVerification({
@@ -232,7 +318,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         data: {'verificationToken': token},
       );
 
-      if (!mounted) return;
+      if (!mounted || _pendingPhoneVerificationToken != token) return;
 
       if (response.statusCode == 200 && response.data != null) {
         final data = response.data as Map<String, dynamic>;
@@ -300,8 +386,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       _showError('Подтвердите номер телефона');
       return false;
     }
-    if (_emailCtrl.text.trim().isEmpty) {
-      _showError('Введите email');
+    if (!isValidAuthEmail(_emailCtrl.text)) {
+      _showError(tr(context, ru: 'Введите корректный email', zh: '请输入有效的邮箱地址'));
       return false;
     }
     return true;
@@ -369,6 +455,19 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       return;
     }
     final clientPartnerInviteActive = clientPartnerInvite.hasPendingInvite;
+    final payload = jsonEncode([
+      _nameCtrl.text.trim(),
+      _normalizePhoneForApi(),
+      normalizeAuthEmail(_emailCtrl.text),
+      _passwordCtrl.text,
+      _agentCodeCtrl.text.trim(),
+      _referralCodeCtrl.text.trim().toUpperCase(),
+    ]);
+    if (_ordinaryRegistrationPayload != null &&
+        _ordinaryRegistrationPayload != payload) {
+      _ordinaryRegistrationKey = const Uuid().v4();
+    }
+    _ordinaryRegistrationPayload = payload;
     final success = await ref
         .read(registrationProvider.notifier)
         .register(
@@ -393,12 +492,15 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               : null,
           registrationIdempotencyKey: clientPartnerInviteActive
               ? clientPartnerInvite.registrationIdempotencyKey
-              : null,
+              : _ordinaryRegistrationKey,
         );
 
     if (!mounted) return;
 
-    if (!success) {
+    if (success) {
+      _draftStore.authenticated = true;
+      _draftStore.clear();
+    } else {
       final error = ref.read(registrationProvider).error;
       _showError(error ?? 'Не удалось зарегистрироваться');
     }
@@ -422,83 +524,84 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     final clientPartnerInviteActive = clientPartnerInvite.hasPendingInvite;
     final bottomPadding = MediaQuery.paddingOf(context).bottom;
     final topPadding = MediaQuery.paddingOf(context).top;
-    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
 
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      resizeToAvoidBottomInset: false,
-      body: Stack(
-        children: [
-          const AppBackground(),
-          GestureDetector(
-            onTap: () => FocusScope.of(context).unfocus(),
-            child: SingleChildScrollView(
-              padding: EdgeInsets.fromLTRB(
-                24,
-                topPadding + 28,
-                24,
-                bottomPadding + keyboardInset + 24,
-              ),
-              child: AuthResponsiveContent(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const AuthHeroHeader(
-                      icon: Icons.how_to_reg_rounded,
-                      title: 'Станьте клиентом',
-                      subtitle:
-                          'Зарегистрируйтесь, подтвердите телефон и сразу начинайте пользоваться нашим складом для работы с грузами.',
-                    ),
-                    const SizedBox(height: 24),
+    return AutofillGroup(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        resizeToAvoidBottomInset: true,
+        body: Stack(
+          children: [
+            const AppBackground(),
+            GestureDetector(
+              onTap: () => FocusScope.of(context).unfocus(),
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  24,
+                  topPadding + 28,
+                  24,
+                  bottomPadding + 24,
+                ),
+                child: AuthResponsiveContent(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const AuthHeroHeader(
+                        icon: Icons.how_to_reg_rounded,
+                        title: 'Станьте клиентом',
+                        subtitle:
+                            'Зарегистрируйтесь, подтвердите телефон и сразу начинайте пользоваться нашим складом для работы с грузами.',
+                      ),
+                      const SizedBox(height: 24),
 
-                    AuthFormCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                      AuthFormCard(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _buildStepProgress(),
+                            const SizedBox(height: 20),
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 320),
+                              switchInCurve: Curves.easeOutCubic,
+                              switchOutCurve: Curves.easeInCubic,
+                              transitionBuilder: _stepTransition,
+                              child: _buildCurrentStep(
+                                state,
+                                partnerLinkActive:
+                                    partnerLinkActive &&
+                                    !clientPartnerInviteActive,
+                                clientPartnerInvite: clientPartnerInvite,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          _buildStepProgress(),
-                          const SizedBox(height: 20),
-                          AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 320),
-                            switchInCurve: Curves.easeOutCubic,
-                            switchOutCurve: Curves.easeInCubic,
-                            transitionBuilder: _stepTransition,
-                            child: _buildCurrentStep(
-                              state,
-                              partnerLinkActive:
-                                  partnerLinkActive &&
-                                  !clientPartnerInviteActive,
-                              clientPartnerInvite: clientPartnerInvite,
+                          const Text(
+                            'Уже есть аккаунт? ',
+                            style: TextStyle(color: Color(0xFF666666)),
+                          ),
+                          GestureDetector(
+                            onTap: () => context.go('/login'),
+                            child: Text(
+                              'Войти',
+                              style: TextStyle(
+                                color: AuthVisuals.primary(context),
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                           ),
                         ],
                       ),
-                    ),
-                    const SizedBox(height: 24),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text(
-                          'Уже есть аккаунт? ',
-                          style: TextStyle(color: Color(0xFF666666)),
-                        ),
-                        GestureDetector(
-                          onTap: () => context.go('/login'),
-                          child: Text(
-                            'Войти',
-                            style: TextStyle(
-                              color: AuthVisuals.primary(context),
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -642,6 +745,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         ),
         const SizedBox(height: 10),
         _buildPhoneVerificationSection(state),
+        AuthVerificationHelp(company: _agentCodeCtrl.text),
         const SizedBox(height: 16),
         _buildTextField(
           controller: _emailCtrl,
@@ -1147,6 +1251,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           ),
           child: TextField(
             controller: controller,
+            autofillHints: controller == _emailCtrl
+                ? const [AutofillHints.email]
+                : controller == _nameCtrl
+                ? const [AutofillHints.name]
+                : null,
             keyboardType: keyboardType,
             inputFormatters: inputFormatters,
             maxLines: maxLines,
@@ -1203,6 +1312,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           ),
           child: TextField(
             controller: controller,
+            autofillHints: const [AutofillHints.newPassword],
             obscureText: obscure,
             decoration: InputDecoration(
               hintText: hint,
@@ -1216,6 +1326,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 size: 20,
               ),
               suffixIcon: IconButton(
+                tooltip: tr(
+                  context,
+                  ru: obscure ? 'Показать пароль' : 'Скрыть пароль',
+                  zh: obscure ? '显示密码' : '隐藏密码',
+                ),
                 icon: Icon(
                   obscure
                       ? Icons.visibility_off_rounded

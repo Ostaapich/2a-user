@@ -77,15 +77,24 @@ class _PartnerProgramScreenState extends ConsumerState<PartnerProgramScreen> {
     );
   }
 
-  void _shareInvite(String inviteUrl) {
+  Future<void> _shareInvite(String inviteUrl) async {
     final companyName = ref.read(companyNameProvider);
-    Share.share(
-      tr(
-        context,
-        ru: 'Зарегистрируйтесь в $companyName по моей ссылке: $inviteUrl',
-        zh: '通过我的邀请链接注册 $companyName：$inviteUrl',
-      ),
-    );
+    try {
+      final result = await Share.share(
+        tr(
+          context,
+          ru: 'Зарегистрируйтесь в $companyName по моей ссылке: $inviteUrl',
+          zh: '通过我的邀请链接注册 $companyName：$inviteUrl',
+        ),
+      );
+      if (!mounted) return;
+      if (result.status == ShareResultStatus.unavailable) {
+        await _copyInvite(inviteUrl);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      await _copyInvite(inviteUrl);
+    }
   }
 
   @override
@@ -283,7 +292,9 @@ class _PartnerProgramHero extends StatelessWidget {
                             ru: 'Партнёрский префикс',
                             zh: '合作伙伴前缀',
                           ),
-                          value: data.prefix ?? '—',
+                          value:
+                              data.prefix ??
+                              tr(context, ru: 'Ещё не назначен', zh: '尚未分配'),
                           icon: Icons.badge_rounded,
                         ),
                       ),
@@ -467,11 +478,6 @@ class _PartnerMetricsCard extends StatelessWidget {
         Icons.scale_rounded,
       ),
       _MetricData(
-        tr(context, ru: 'Доступно к выплате', zh: '可提现'),
-        _usd(data.payableUsd),
-        Icons.account_balance_wallet_rounded,
-      ),
-      _MetricData(
         tr(context, ru: 'Выплачено', zh: '已支付'),
         _usd(data.paidUsd),
         Icons.check_circle_rounded,
@@ -479,7 +485,7 @@ class _PartnerMetricsCard extends StatelessWidget {
       _MetricData(
         tr(context, ru: 'Ставка', zh: '费率'),
         data.rateUsdPerKg == null
-            ? '—'
+            ? tr(context, ru: 'Уточните у менеджера', zh: '请向经理确认')
             : '${data.rateUsdPerKg!.toStringAsFixed(4)} USD/кг',
         Icons.percent_rounded,
       ),

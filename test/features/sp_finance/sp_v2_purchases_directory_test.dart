@@ -1,5 +1,8 @@
 import 'package:twoalogisticcabineuser/src/core/branding/company_branding_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_keyboard_dismiss.dart';
+import '../keyboard/keyboard_form_probe.dart';
+import '../../helpers/keyboard_acceptance.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -150,6 +153,7 @@ Future<_TestPurchasesController> _pumpDirectory(
   required Size size,
   bool embedded = false,
   NavigatorObserver? observer,
+  TargetPlatform platform = TargetPlatform.android,
 }) async {
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.binding.setSurfaceSize(size);
@@ -167,6 +171,7 @@ Future<_TestPurchasesController> _pumpDirectory(
         ),
       ],
       child: MaterialApp(
+        builder: (_, child) => AppKeyboardDismissRegion(child: child!),
         navigatorObservers: [if (observer != null) observer],
         locale: const Locale('ru'),
         localizationsDelegates: const [
@@ -176,6 +181,7 @@ Future<_TestPurchasesController> _pumpDirectory(
         ],
         supportedLocales: const [Locale('ru')],
         theme: ThemeData(
+          platform: platform,
           colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF6D5BD0)),
         ),
         home: Scaffold(body: SpV2PurchasesScreen(embedded: embedded)),
@@ -188,6 +194,29 @@ Future<_TestPurchasesController> _pumpDirectory(
 }
 
 void main() {
+  setUpAll(loadKeyboardAcceptanceFonts);
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets(
+      '$platform _pumpDirectory actual create editor every field320height',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetViewInsets);
+        await _pumpDirectory(
+          tester,
+          size: const Size(390, 640),
+          platform: platform,
+        );
+        expect(await probeCurrentFormEditors(tester), 1);
+        await tester.ensureVisible(find.byIcon(Icons.add_rounded));
+        await tester.tap(find.byIcon(Icons.add_rounded));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(await probeCurrentFormEditors(tester, minimumFields: 3), 3);
+      },
+    );
+  }
+
   testWidgets('embedded purchase tab omits the duplicate hero', (tester) async {
     await _pumpDirectory(tester, size: const Size(390, 900), embedded: true);
 

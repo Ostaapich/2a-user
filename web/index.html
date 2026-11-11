@@ -158,6 +158,7 @@
         navigator.serviceWorker.getRegistrations()
           .then(function(registrations) {
             registrations.forEach(function(reg) {
+              if (new URL(reg.scope).pathname === '/media-export/') return;
               reg.unregister().catch(function(error) {
                 logServiceWorkerWarning('Service worker unregister failed:', error);
               });
@@ -201,6 +202,7 @@
       }
     }
   </script>
+  <script src="media-export.js"></script>
   <script src="bundle.js"></script>
   <script src="flutter_bootstrap.js" async></script>
 </body>

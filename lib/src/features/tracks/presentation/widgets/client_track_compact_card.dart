@@ -220,23 +220,7 @@ class ClientTrackCompactCard extends StatelessWidget {
                   ],
                   if (actions.isNotEmpty) ...[
                     const SizedBox(height: 12),
-                    if (footer == null)
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          final fullWidth = constraints.maxWidth + 28;
-                          return SizedBox(
-                            height: 52,
-                            child: OverflowBox(
-                              alignment: Alignment.center,
-                              minWidth: fullWidth,
-                              maxWidth: fullWidth,
-                              child: _QuickActionPanel(actions: actions),
-                            ),
-                          );
-                        },
-                      )
-                    else
-                      _QuickActionPanel(actions: actions),
+                    _QuickActionPanel(actions: actions),
                   ],
                   if (footer != null) ...[const SizedBox(height: 10), footer!],
                 ],
@@ -332,7 +316,7 @@ class _DetailTabButton extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOutCubic,
-        height: 42,
+        height: 44,
         constraints: const BoxConstraints(minWidth: 104),
         decoration: BoxDecoration(
           gradient: selected ? context.brandGradient : null,
@@ -446,8 +430,8 @@ class _CopyButton extends StatelessWidget {
         onTap: onTap,
         radius: 20,
         child: SizedBox(
-          width: 34,
-          height: 34,
+          width: 44,
+          height: 44,
           child: Center(
             child: Container(
               width: 27,
@@ -603,48 +587,42 @@ class _IndicatorCell extends StatelessWidget {
 
 class _QuickActionPanel extends StatelessWidget {
   final List<ClientTrackQuickAction> actions;
-
   const _QuickActionPanel({required this.actions});
-
   @override
   Widget build(BuildContext context) {
     return Container(
       key: const ValueKey('client-track-action-panel'),
-      height: 52,
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7F8FB),
-        borderRadius: const BorderRadius.only(
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+      decoration: const BoxDecoration(
+        color: Color(0xFFF7F8FB),
+        borderRadius: BorderRadius.only(
           bottomLeft: Radius.circular(23),
           bottomRight: Radius.circular(23),
         ),
       ),
-      child: ClipRRect(
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(19),
-          bottomRight: Radius.circular(19),
-        ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final fillWidth = actions.length <= 4;
-            final children = <Widget>[
-              for (var index = 0; index < actions.length; index++)
-                if (fillWidth)
-                  Expanded(child: _QuickActionButton(action: actions[index]))
-                else
-                  SizedBox(
-                    width: 80,
-                    child: _QuickActionButton(action: actions[index]),
-                  ),
-            ];
-            if (fillWidth) return Row(children: children);
-            return SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              physics: const BouncingScrollPhysics(),
-              child: Row(children: children),
-            );
-          },
-        ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final largeText = MediaQuery.textScalerOf(context).scale(1) > 1.3;
+          final columns = actions.length <= 4 && !largeText
+              ? actions.length
+              : (largeText
+                    ? 2
+                    : constraints.maxWidth >= 350
+                    ? 4
+                    : 3);
+          final width = (constraints.maxWidth - 4 * (columns - 1)) / columns;
+          return Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: [
+              for (final action in actions)
+                SizedBox(
+                  width: width,
+                  child: _QuickActionButton(action: action),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -669,37 +647,41 @@ class _QuickActionButton extends StatelessWidget {
           child: InkWell(
             key: ValueKey('client-track-action-${action.label}'),
             onTap: action.onTap,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 25,
-                    height: 25,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 64),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: 25,
+                      height: 25,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(action.icon, size: 14, color: color),
                     ),
-                    child: Icon(action.icon, size: 14, color: color),
-                  ),
-                  const SizedBox(height: 1),
-                  Text(
-                    action.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontFamily: 'Gilroy',
-                      fontSize: 9,
-                      height: 1,
-                      fontWeight: FontWeight.w800,
-                      color: action.destructive
-                          ? color
-                          : AppColors.textPrimary.withValues(alpha: 0.76),
+                    const SizedBox(height: 4),
+                    Text(
+                      action.label,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: 'Gilroy',
+                        fontSize: 11,
+                        height: 1,
+                        fontWeight: FontWeight.w800,
+                        color: action.destructive
+                            ? color
+                            : AppColors.textPrimary.withValues(alpha: 0.76),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

@@ -1,3 +1,4 @@
+import '../../../core/services/analytics_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -71,19 +72,28 @@ class BankQrPaymentService {
 
   /// Старт оплаты в рублях по QR. Идемпотентно на бэке.
   Future<BankQrPaymentResult?> startBankQrPayment(String invoiceId) async {
-    try {
-      final response = await _apiClient.post(
-        '/client/invoices/$invoiceId/bank-qr/start',
-        data: const <String, dynamic>{},
-      );
-      if (response.statusCode == 200 && response.data != null) {
-        return BankQrPaymentResult.fromJson(response.data as Map<String, dynamic>);
-      }
-      return null;
-    } on DioException catch (e) {
-      debugPrint('startBankQrPayment error: $e');
-      rethrow;
-    }
+    return AnalyticsService.traceOperation(
+      WorkflowAction.paymentQrStart,
+      () async {
+        try {
+          final response = await _apiClient.post(
+            '/client/invoices/$invoiceId/bank-qr/start',
+            data: const <String, dynamic>{},
+          );
+          if (response.statusCode == 200 && response.data != null) {
+            return BankQrPaymentResult.fromJson(
+              response.data as Map<String, dynamic>,
+            );
+          }
+          return null;
+        } on DioException catch (e) {
+          debugPrint('startBankQrPayment error: $e');
+          rethrow;
+        }
+      },
+      outcome: (result) =>
+          result != null ? WorkflowStage.succeeded : WorkflowStage.failed,
+    );
   }
 
   /// Загрузка чека (изображение/PDF). Переводит счёт в payment_review.
@@ -93,30 +103,39 @@ class BankQrPaymentService {
     required String fileName,
     required String mimeType,
   }) async {
-    try {
-      final parts = mimeType.split('/');
-      final type = parts.isNotEmpty ? parts[0] : 'application';
-      final subtype = parts.length > 1 ? parts[1] : 'octet-stream';
-      final formData = FormData.fromMap({
-        'file': MultipartFile.fromBytes(
-          bytes,
-          filename: fileName,
-          contentType: MediaType(type, subtype),
-        ),
-      });
-      final response = await _apiClient.post(
-        '/client/payments/$paymentId/receipt',
-        data: formData,
-        options: Options(headers: {'Content-Type': 'multipart/form-data'}),
-      );
-      if (response.statusCode == 200 && response.data != null) {
-        return PaymentReceiptUploadResult.fromJson(response.data as Map<String, dynamic>);
-      }
-      return null;
-    } on DioException catch (e) {
-      debugPrint('uploadBankQrReceipt error: $e');
-      rethrow;
-    }
+    return AnalyticsService.traceOperation(
+      WorkflowAction.paymentReceipt,
+      () async {
+        try {
+          final parts = mimeType.split('/');
+          final type = parts.isNotEmpty ? parts[0] : 'application';
+          final subtype = parts.length > 1 ? parts[1] : 'octet-stream';
+          final formData = FormData.fromMap({
+            'file': MultipartFile.fromBytes(
+              bytes,
+              filename: fileName,
+              contentType: MediaType(type, subtype),
+            ),
+          });
+          final response = await _apiClient.post(
+            '/client/payments/$paymentId/receipt',
+            data: formData,
+            options: Options(headers: {'Content-Type': 'multipart/form-data'}),
+          );
+          if (response.statusCode == 200 && response.data != null) {
+            return PaymentReceiptUploadResult.fromJson(
+              response.data as Map<String, dynamic>,
+            );
+          }
+          return null;
+        } on DioException catch (e) {
+          debugPrint('uploadBankQrReceipt error: $e');
+          rethrow;
+        }
+      },
+      outcome: (result) =>
+          result != null ? WorkflowStage.succeeded : WorkflowStage.failed,
+    );
   }
 }
 

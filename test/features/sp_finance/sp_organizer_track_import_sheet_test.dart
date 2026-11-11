@@ -1,4 +1,8 @@
+import 'package:twoalogisticcabineuser/src/features/tracks/data/tracks_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_keyboard_dismiss.dart';
+import '../keyboard/keyboard_form_probe.dart';
+import '../../helpers/keyboard_acceptance.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -75,6 +79,7 @@ class _FakeRepository extends SpOrganizerRepository {
 Future<_FakeRepository> _pumpSheet(
   WidgetTester tester, {
   required Size size,
+  TargetPlatform platform = TargetPlatform.android,
 }) async {
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.binding.setSurfaceSize(size);
@@ -82,10 +87,25 @@ Future<_FakeRepository> _pumpSheet(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
+        trackStatusesProvider.overrideWith(
+          (ref) async => const [
+            TrackStatus(
+              id: 1,
+              type: 'track',
+              code: 'in_warehouse',
+              nameRu: 'На складе',
+              nameZh: '已入库',
+              sortOrder: 1,
+              isActive: true,
+            ),
+          ],
+        ),
         spOrganizerRepositoryProvider.overrideWithValue(repository),
         spV2CustomersProvider.overrideWith((ref) async => const [_customer]),
       ],
       child: MaterialApp(
+        theme: ThemeData(platform: platform),
+        builder: (_, child) => AppKeyboardDismissRegion(child: child!),
         locale: const Locale('ru'),
         localizationsDelegates: const [
           GlobalMaterialLocalizations.delegate,
@@ -118,6 +138,19 @@ Future<_FakeRepository> _pumpSheet(
 }
 
 void main() {
+  setUpAll(loadKeyboardAcceptanceFonts);
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets('$platform import search automatic caret320height', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetViewInsets);
+      await _pumpSheet(tester, size: const Size(390, 640), platform: platform);
+      expect(await probeCurrentFormEditors(tester), 1);
+    });
+  }
+
   test('track import page parses safe snapshot fields', () {
     final page = SpOrganizerTrackImportCandidatePage.fromJson({
       'candidates': [
@@ -168,6 +201,11 @@ void main() {
     await tester.pump();
     expect(find.text('Куртка из трека'), findsOneWidget);
     expect(find.text('YT-SP-701-CN'), findsOneWidget);
+    await Scrollable.ensureVisible(
+      tester.element(find.text('Куртка из трека')),
+      alignment: 0.5,
+    );
+    await tester.pump(const Duration(milliseconds: 400));
     await tester.tap(find.text('Куртка из трека'));
     await tester.pump();
     await tester.drag(trackList, const Offset(0, -220));

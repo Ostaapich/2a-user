@@ -30,7 +30,8 @@ class BrowserVideoSession {
     this._origin,
     this._path,
     this._token,
-    this._getToken,
+    this._identity,
+    this._getSessionIdentity,
     this._refreshEvery,
     this._onInvalid,
   );
@@ -38,8 +39,8 @@ class BrowserVideoSession {
   final Dio _dio;
   final bool _ownsDio;
   final Uri _origin;
-  final String _path, _token;
-  final Future<String?> Function() _getToken;
+  final String _path, _token, _identity;
+  final Future<String?> Function() _getSessionIdentity;
   final Duration _refreshEvery;
   final void Function()? _onInvalid;
   Timer? _timer;
@@ -50,6 +51,9 @@ class BrowserVideoSession {
   static Future<BrowserVideoSession> open({
     required String path,
     required Future<String?> Function() getToken,
+    // A renewed bearer is still the same owner. Legacy callers without this
+    // callback retain strict raw-token comparison.
+    Future<String?> Function()? getSessionIdentity,
     Uri? origin,
     Dio? transport,
     Duration refreshEvery = const Duration(minutes: 10),
@@ -62,9 +66,17 @@ class BrowserVideoSession {
     if (!const ['https', 'http'].contains(base.scheme) || base.host.isEmpty) {
       throw StateError('Invalid browser origin');
     }
+    final readIdentity = getSessionIdentity ?? getToken;
+    final identity = await readIdentity();
     final token = await getToken();
-    if (token == null || token.isEmpty) {
+    if (token == null ||
+        token.isEmpty ||
+        identity == null ||
+        identity.isEmpty) {
       throw StateError('Media authentication required');
+    }
+    if (await readIdentity() != identity) {
+      throw StateError('Media session changed');
     }
     final session = BrowserVideoSession._(
       transport ?? Dio(),
@@ -72,7 +84,8 @@ class BrowserVideoSession {
       Uri.parse(base.origin),
       path,
       token,
-      getToken,
+      identity,
+      readIdentity,
       refreshEvery,
       onInvalid,
     );
@@ -113,7 +126,7 @@ class BrowserVideoSession {
     }
     final nextUrl = _origin.resolve(expected),
         nextGrant = data['grantId'] as String;
-    if (_disposed || await _getToken() != _token) {
+    if (_disposed || await _getSessionIdentity() != _identity) {
       await _clear(nextUrl, nextGrant);
       if (!_disposed) throw StateError('Media session changed');
       return;
@@ -130,7 +143,7 @@ class BrowserVideoSession {
     if (_disposed || _renewing) return;
     _renewing = true;
     try {
-      if (await _getToken() != _token) {
+      if (await _getSessionIdentity() != _identity) {
         throw StateError('Media session changed');
       }
       await _grant();

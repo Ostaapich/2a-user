@@ -67,7 +67,7 @@ class _TrainingScreenState extends State<TrainingScreen> {
     setState(() {
       _saving = false;
       _saveFailed = !success;
-      if (success) _progress = next;
+      _progress = next;
     });
     return success;
   }
@@ -81,8 +81,8 @@ class _TrainingScreenState extends State<TrainingScreen> {
       0,
       lesson.steps.length - 1,
     );
-    final saved = await _save(_progress.visit(lesson.id, step));
-    if (!mounted || !saved) return;
+    await _save(_progress.visit(lesson.id, step));
+    if (!mounted) return;
     setState(() {
       _lessonId = lesson.id;
     });
@@ -90,8 +90,8 @@ class _TrainingScreenState extends State<TrainingScreen> {
   }
 
   Future<void> _move(TrainingLesson lesson, int step) async {
-    final saved = await _save(_progress.visit(lesson.id, step));
-    if (!mounted || !saved) return;
+    await _save(_progress.visit(lesson.id, step));
+    if (!mounted) return;
     _scrollTop();
   }
 
@@ -99,14 +99,14 @@ class _TrainingScreenState extends State<TrainingScreen> {
     TrainingLesson lesson,
     TrainingLessonStatus status,
   ) async {
-    final saved = await _save(
+    await _save(
       _progress.visit(
         lesson.id,
         _progress.steps[lesson.id] ?? 0,
         status: status,
       ),
     );
-    if (!mounted || !saved) return;
+    if (!mounted) return;
     _scrollTop();
   }
 
@@ -167,12 +167,21 @@ class _TrainingScreenState extends State<TrainingScreen> {
                         child: Text(
                           tr(
                             context,
-                            ru: 'Не удалось сохранить прогресс. Повторите действие.',
-                            zh: '无法保存进度，请重试。',
+                            ru: 'Прогресс пока сохранён только в этом окне. Можно продолжать чтение и повторить сохранение.',
+                            zh: '进度暂时仅保存在当前页面中。您可以继续阅读并重试保存。',
                           ),
                           style: TextStyle(
                             color: Theme.of(context).colorScheme.error,
                           ),
+                        ),
+                      ),
+                    if (_saveFailed)
+                      TextButton.icon(
+                        key: const Key('training-retry-save'),
+                        onPressed: () => _save(_progress),
+                        icon: const Icon(Icons.refresh),
+                        label: Text(
+                          tr(context, ru: 'Повторить сохранение', zh: '重新保存'),
                         ),
                       ),
                     if (lesson == null)

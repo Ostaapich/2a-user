@@ -22,6 +22,7 @@ class PurchaseListScreen extends ConsumerStatefulWidget {
 class _PurchaseListScreenState extends ConsumerState<PurchaseListScreen> {
   final _noteController = TextEditingController();
   bool _isSubmitting = false;
+  final _updatingItems = <int>{};
 
   @override
   void dispose() {
@@ -62,9 +63,9 @@ class _PurchaseListScreenState extends ConsumerState<PurchaseListScreen> {
                   'Кнопка «Отправить на сборку» внизу экрана отправляет весь список менеджеру для оформления и выкупа.',
             ),
           ],
-          child: Stack(
+          child: Column(
             children: [
-              _buildContent(context, list, topPad, bottomPad),
+              Expanded(child: _buildContent(context, list, topPad)),
               _buildSubmitBar(context, list, bottomPad),
             ],
           ),
@@ -147,14 +148,9 @@ class _PurchaseListScreenState extends ConsumerState<PurchaseListScreen> {
     );
   }
 
-  Widget _buildContent(
-    BuildContext context,
-    PurchaseList list,
-    double topPad,
-    double bottomPad,
-  ) {
+  Widget _buildContent(BuildContext context, PurchaseList list, double topPad) {
     return ListView(
-      padding: EdgeInsets.fromLTRB(16, topPad * 0.7 + 16, 16, 120 + bottomPad),
+      padding: EdgeInsets.fromLTRB(16, topPad * 0.7 + 16, 16, 16),
       children: [
         Text(
           'Список выкупа',
@@ -176,6 +172,7 @@ class _PurchaseListScreenState extends ConsumerState<PurchaseListScreen> {
             listId: list.id,
             onQuantityChanged: (newQty) =>
                 _updateQuantity(list.id, item.id, newQty),
+            isUpdating: _updatingItems.contains(item.id),
             onDelete: () => _deleteItem(list.id, item.id),
             onTap: () => context.push(
               Uri(
@@ -245,88 +242,81 @@ class _PurchaseListScreenState extends ConsumerState<PurchaseListScreen> {
       totalPrice += item.price * item.quantity;
     }
 
-    return Positioned(
-      left: 0,
-      right: 0,
-      bottom: 0,
-      child: Container(
-        padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + bottomPad),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.08),
-              blurRadius: 16,
-              offset: const Offset(0, -4),
+    return Container(
+      padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + bottomPad),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, -4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '¥${totalPrice.toStringAsFixed(0)}',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    color: context.brandPrimary,
+                  ),
+                ),
+                Text(
+                  '${list.totalItems} товаров',
+                  style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                ),
+              ],
             ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '¥${totalPrice.toStringAsFixed(0)}',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w800,
-                      color: context.brandPrimary,
+          ),
+          const SizedBox(width: 12),
+          FilledButton.icon(
+            onPressed: _isSubmitting || _updatingItems.isNotEmpty
+                ? null
+                : () => _submitList(list.id),
+            icon: _isSubmitting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
                     ),
-                  ),
-                  Text(
-                    '${list.totalItems} товаров',
-                    style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
-                  ),
-                ],
+                  )
+                : const Icon(Icons.send_rounded, size: 20),
+            label: Text(
+              _isSubmitting ? 'Отправляем...' : 'Отправить менеджеру',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
               ),
             ),
-            const SizedBox(width: 12),
-            FilledButton.icon(
-              onPressed: _isSubmitting ? null : () => _submitList(list.id),
-              icon: _isSubmitting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Icon(Icons.send_rounded, size: 20),
-              label: Text(
-                _isSubmitting ? 'Отправляем...' : 'Отправить менеджеру',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 14,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
   Future<void> _updateQuantity(int listId, int itemId, int newQty) async {
-    if (newQty < 1) return;
+    if (newQty < 1 || _isSubmitting || _updatingItems.contains(itemId)) return;
+    setState(() => _updatingItems.add(itemId));
     try {
       final apiClient = ref.read(apiClientProvider);
       await apiClient.patch(
         '/shop/purchase-lists/$listId/items/$itemId',
         data: {'quantity': newQty},
       );
+      if (!mounted) return;
       ref.invalidate(activePurchaseListProvider);
     } catch (e) {
       if (mounted) {
@@ -335,6 +325,8 @@ class _PurchaseListScreenState extends ConsumerState<PurchaseListScreen> {
           SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red),
         );
       }
+    } finally {
+      if (mounted) setState(() => _updatingItems.remove(itemId));
     }
   }
 
@@ -354,6 +346,7 @@ class _PurchaseListScreenState extends ConsumerState<PurchaseListScreen> {
   }
 
   Future<void> _submitList(int listId) async {
+    if (_isSubmitting || _updatingItems.isNotEmpty) return;
     setState(() => _isSubmitting = true);
     try {
       final apiClient = ref.read(apiClientProvider);
@@ -403,6 +396,7 @@ class _PurchaseItemCard extends StatelessWidget {
   final ValueChanged<int> onQuantityChanged;
   final VoidCallback onDelete;
   final VoidCallback onTap;
+  final bool isUpdating;
 
   const _PurchaseItemCard({
     required this.item,
@@ -410,13 +404,16 @@ class _PurchaseItemCard extends StatelessWidget {
     required this.onQuantityChanged,
     required this.onDelete,
     required this.onTap,
+    this.isUpdating = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return Dismissible(
       key: ValueKey(item.id),
-      direction: DismissDirection.endToStart,
+      direction: isUpdating
+          ? DismissDirection.none
+          : DismissDirection.endToStart,
       onDismissed: (_) => onDelete(),
       background: Container(
         alignment: Alignment.centerRight,
@@ -523,7 +520,8 @@ class _PurchaseItemCard extends StatelessWidget {
                           // Quantity controls
                           _QuantityControls(
                             quantity: item.quantity,
-                            onChanged: onQuantityChanged,
+                            onChanged: isUpdating ? null : onQuantityChanged,
+                            isUpdating: isUpdating,
                           ),
                         ],
                       ),
@@ -541,9 +539,14 @@ class _PurchaseItemCard extends StatelessWidget {
 
 class _QuantityControls extends StatelessWidget {
   final int quantity;
-  final ValueChanged<int> onChanged;
+  final ValueChanged<int>? onChanged;
+  final bool isUpdating;
 
-  const _QuantityControls({required this.quantity, required this.onChanged});
+  const _QuantityControls({
+    required this.quantity,
+    required this.onChanged,
+    this.isUpdating = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -551,7 +554,9 @@ class _QuantityControls extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         GestureDetector(
-          onTap: quantity > 1 ? () => onChanged(quantity - 1) : null,
+          onTap: quantity > 1 && onChanged != null
+              ? () => onChanged!(quantity - 1)
+              : () {},
           child: Container(
             width: 28,
             height: 28,
@@ -570,17 +575,23 @@ class _QuantityControls extends StatelessWidget {
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: Text(
-            '$quantity',
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary,
-            ),
-          ),
+          child: isUpdating
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text(
+                  '$quantity',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
         ),
         GestureDetector(
-          onTap: () => onChanged(quantity + 1),
+          onTap: onChanged == null ? () {} : () => onChanged!(quantity + 1),
           child: Container(
             width: 28,
             height: 28,

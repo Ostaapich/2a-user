@@ -68,12 +68,38 @@ class PhotoItem {
 /// Attach report videos once even when several photos belong to that report.
 List<PhotoItem> photoReportGallery(List<PhotoItem> photos) {
   final result = <PhotoItem>[];
-  final seen = <String>{};
+  final seenIds = <String>{};
+  final seenUrls = <String>{};
+  void append(PhotoItem item) {
+    if (item.isVideo) {
+      if (seenUrls.contains(item.url) ||
+          (item.videoId != null && seenIds.contains(item.videoId))) {
+        return;
+      }
+      seenUrls.add(item.url);
+      if (item.videoId != null) seenIds.add(item.videoId!);
+    }
+    result.add(item);
+  }
+
   for (final photo in photos) {
-    result.add(photo);
+    append(photo);
     for (final video in photo.reportVideos) {
-      if (seen.add(video.videoId ?? video.url)) result.add(video);
+      append(video);
     }
   }
   return result;
+}
+
+/// Locate the retained item after merging top-level and attached videos.
+int photoReportGalleryIndex(List<PhotoItem> gallery, PhotoItem requested) {
+  final index = gallery.indexWhere(
+    (item) =>
+        identical(item, requested) ||
+        (item.isVideo &&
+            requested.isVideo &&
+            (item.url == requested.url ||
+                (item.videoId != null && item.videoId == requested.videoId))),
+  );
+  return index < 0 ? 0 : index;
 }

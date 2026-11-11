@@ -1,11 +1,17 @@
+import '../../../core/services/analytics_service.dart';
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/blurred_modal_bottom_sheet.dart';
 
 import '../../../core/ui/app_colors.dart';
+import '../../../core/persistence/shared_preferences_provider.dart';
+import '../../auth/data/auth_provider.dart';
 import '../../../core/ui/app_input_decoration.dart';
 import '../../../core/ui/sheet_handle.dart';
+import '../../../core/ui/unsaved_changes_guard.dart';
 import '../../../core/utils/locale_text.dart';
 import '../../clients/application/client_codes_controller.dart';
 import '../../add_tracks/data/add_tracks_repository.dart';
@@ -16,10 +22,13 @@ import '../../training/presentation/training_target.dart';
 
 /// Модальное окно для добавления треков
 Future<void> showAddTracksDialog(BuildContext context, WidgetRef ref) async {
+  AnalyticsService.trackFunnel(WorkflowAction.trackAdd, WorkflowStage.viewed);
   return showBlurredModalBottomSheet(
     context: context,
     useRootNavigator: true,
     useSafeArea: true,
+    isDismissible: false,
+    enableDrag: false,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
     barrierColor: Colors.black.withValues(alpha: 0.22),
@@ -39,10 +48,62 @@ class _AddTracksDialogState extends ConsumerState<_AddTracksDialog> {
   String? _error;
   bool _submitting = false;
   int _addedTotal = 0;
+  SharedPreferences? _draftPrefs;
+  String? _draftKey;
+  String? _draftClientCode;
+  int? _draftClientId;
+  Timer? _draftTimer;
+  bool _draftCompleted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final auth = ref.read(authProvider);
+    _draftClientCode = ref.read(activeClientCodeProvider);
+    _draftClientId = auth.clientId;
+    if (auth.clientId != null && _draftClientCode != null) {
+      _draftKey =
+          'track_input_draft:${Uri.encodeComponent(auth.userDomain ?? '')}:${auth.clientId}:${Uri.encodeComponent(_draftClientCode!)}';
+      try {
+        _draftPrefs = ref.read(sharedPreferencesProvider);
+        _ctrl.text = _draftPrefs?.getString(_draftKey!) ?? '';
+      } catch (_) {
+        /* Closing is still guarded when storage is unavailable. */
+      }
+    }
+    _ctrl.addListener(_scheduleDraft);
+  }
+
+  void _scheduleDraft() {
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(milliseconds: 300), _persistDraft);
+  }
+
+  void _persistDraft() {
+    final key = _draftKey;
+    final prefs = _draftPrefs;
+    if (key == null || prefs == null) return;
+    final text = _reviewDrafts.isNotEmpty
+        ? _reviewTrackNumbers().join('\n')
+        : _ctrl.text;
+    final write = _draftCompleted || text.trim().isEmpty
+        ? prefs.remove(key)
+        : prefs.setString(key, text);
+    unawaited(write.catchError((_) => false));
+  }
+
+  void _discardDraft() {
+    _draftCompleted = true;
+    _persistDraft();
+  }
+
   final List<SkippedTrack> _skippedTotal = [];
 
   @override
   void dispose() {
+    _draftTimer?.cancel();
+    _persistDraft();
+    _ctrl.removeListener(_scheduleDraft);
     _ctrl.dispose();
     for (final draft in _reviewDrafts) {
       draft.controller.dispose();
@@ -54,6 +115,17 @@ class _AddTracksDialogState extends ConsumerState<_AddTracksDialog> {
     if (!mounted) return;
 
     final clientCode = ref.read(activeClientCodeProvider);
+    if (clientCode != _draftClientCode ||
+        ref.read(authProvider).clientId != _draftClientId) {
+      setState(
+        () => _error = tr(
+          context,
+          ru: 'Аккаунт или код клиента изменился. Закройте форму и откройте её для нужного кода.',
+          zh: '账号或客户代码已变更，请关闭表单并为正确的客户代码重新打开。',
+        ),
+      );
+      return;
+    }
     if (clientCode == null) {
       setState(() {
         _error = 'Выберите код клиента';
@@ -237,6 +309,10 @@ class _AddTracksDialogState extends ConsumerState<_AddTracksDialog> {
     _reviewDrafts
       ..clear()
       ..addAll(drafts);
+    for (final draft in _reviewDrafts) {
+      draft.controller.addListener(_scheduleDraft);
+    }
+    _scheduleDraft();
   }
 
   void _removeReviewDraft(int index) {
@@ -248,6 +324,8 @@ class _AddTracksDialogState extends ConsumerState<_AddTracksDialog> {
 
   Future<void> _closeAfterSuccess() async {
     if (_addedTotal <= 0 || !mounted) return;
+    _draftCompleted = true;
+    _persistDraft();
     final route = ModalRoute.of(context);
     await Future.delayed(const Duration(milliseconds: 1500));
     if (mounted && route != null && route.isCurrent) {
@@ -295,7 +373,15 @@ class _AddTracksDialogState extends ConsumerState<_AddTracksDialog> {
   @override
   Widget build(BuildContext context) {
     try {
-      return _buildContent(context);
+      return ValueListenableBuilder<TextEditingValue>(
+        valueListenable: _ctrl,
+        builder: (_, value, _) => UnsavedChangesGuard(
+          hasChanges: value.text.trim().isNotEmpty || _reviewDrafts.isNotEmpty,
+          isBusy: _submitting,
+          onDiscard: _discardDraft,
+          child: _buildContent(context),
+        ),
+      );
     } catch (e, stackTrace) {
       debugPrint('❌ Error building AddTracksDialog: $e');
       debugPrint('Stack trace: $stackTrace');
@@ -366,7 +452,12 @@ class _AddTracksDialogState extends ConsumerState<_AddTracksDialog> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _AddTracksHeader(clientCode: clientCode),
+                  _AddTracksHeader(
+                    clientCode: clientCode,
+                    onClose: _submitting
+                        ? null
+                        : () => Navigator.of(context).maybePop(),
+                  ),
                   const SizedBox(height: 14),
                   if (clientCode != null) ...[
                     if (_reviewDrafts.isEmpty) const _AddTracksHintCard(),
@@ -453,8 +544,9 @@ class _AddTracksDialogState extends ConsumerState<_AddTracksDialog> {
 
 class _AddTracksHeader extends StatelessWidget {
   final String? clientCode;
+  final VoidCallback? onClose;
 
-  const _AddTracksHeader({required this.clientCode});
+  const _AddTracksHeader({required this.clientCode, this.onClose});
 
   @override
   Widget build(BuildContext context) {
@@ -559,6 +651,11 @@ class _AddTracksHeader extends StatelessWidget {
                 ],
               ],
             ),
+          ),
+          IconButton(
+            tooltip: tr(context, ru: 'Закрыть', zh: '关闭'),
+            onPressed: onClose,
+            icon: const Icon(Icons.close_rounded, color: Colors.white),
           ),
         ],
       ),

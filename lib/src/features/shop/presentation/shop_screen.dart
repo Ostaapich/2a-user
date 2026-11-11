@@ -1,3 +1,4 @@
+import '../../../core/utils/commerce_text.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -104,7 +105,8 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) {
-        return Padding(
+        return SingleChildScrollView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: EdgeInsets.fromLTRB(
             20,
             20,
@@ -115,8 +117,8 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Фильтр по цене (¥)',
+              Text(
+                commerceText(context, 'Фильтр по цене (¥)'),
                 style: TextStyle(
                   fontSize: 17,
                   fontWeight: FontWeight.w600,
@@ -139,7 +141,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                       ],
                       decoration: appInputDecoration(
                         context,
-                        labelText: 'От',
+                        labelText: commerceText(context, 'От'),
                         radius: 12,
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 12,
@@ -162,7 +164,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                       ],
                       decoration: appInputDecoration(
                         context,
-                        labelText: 'До',
+                        labelText: commerceText(context, 'До'),
                         radius: 12,
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 12,
@@ -191,7 +193,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                         ),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
-                      child: const Text('Сбросить'),
+                      child: Text(commerceText(context, 'Сбросить')),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -216,7 +218,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                         ),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
-                      child: const Text('Применить'),
+                      child: Text(commerceText(context, 'Применить')),
                     ),
                   ),
                 ],
@@ -259,36 +261,46 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
 
     return TutorialScreenWrapper(
       screenKey: 'marketplaces',
-      steps: const [
+      steps: [
         TutorialStep(
           icon: Icons.store_rounded,
-          title: 'Каталоги маркетплейсов',
-          description:
-              'Выберите доступную площадку, найдите товар и подготовьте список для выкупа.',
+          title: commerceText(context, 'Каталоги маркетплейсов'),
+          description: commerceText(
+            context,
+            'Выберите доступную площадку, найдите товар и подготовьте список для выкупа.',
+          ),
         ),
         TutorialStep(
           icon: Icons.search_rounded,
-          title: 'Поиск товара',
-          description:
-              'Введите название товара или вставьте ссылку с площадки в строку поиска — мы найдём и покажем карточку.',
+          title: commerceText(context, 'Поиск товара'),
+          description: commerceText(
+            context,
+            'Введите название товара или вставьте ссылку с площадки в строку поиска — мы найдём и покажем карточку.',
+          ),
         ),
         TutorialStep(
           icon: Icons.category_rounded,
-          title: 'Категории',
-          description:
-              'Выберите категорию, чтобы просматривать товары по разделам. Нажмите на товар для перехода к деталям.',
+          title: commerceText(context, 'Категории'),
+          description: commerceText(
+            context,
+            'Выберите категорию, чтобы просматривать товары по разделам. Нажмите на товар для перехода к деталям.',
+          ),
         ),
         TutorialStep(
           icon: Icons.filter_alt_rounded,
-          title: 'Фильтр по цене',
-          description:
-              'Нажмите иконку фильтра (воронка) рядом со строкой поиска, чтобы задать диапазон цен в юанях.',
+          title: commerceText(context, 'Фильтр по цене'),
+          description: commerceText(
+            context,
+            'Нажмите иконку фильтра (воронка) рядом со строкой поиска, чтобы задать диапазон цен в юанях.',
+          ),
         ),
         TutorialStep(
           icon: Icons.shopping_cart_rounded,
-          title: 'Список выкупа',
-          description:
-              'Иконка корзины вверху открывает ваш текущий список выкупа. Там собраны все товары перед отправкой заявки.',
+          title: commerceText(context, 'Список выкупа'),
+          description: commerceText(
+            context,
+            'Иконка корзины вверху открывает ваш текущий список выкупа. Там собраны все товары перед отправкой заявки.',
+          ),
         ),
       ],
       child: Stack(
@@ -345,7 +357,9 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                                   .map(
                                     (opt) => DropdownMenuItem(
                                       value: opt.$1,
-                                      child: Text(opt.$2),
+                                      child: Text(
+                                        commerceText(context, opt.$2),
+                                      ),
                                     ),
                                   )
                                   .toList(),
@@ -425,7 +439,8 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                       Flexible(
                         child: Chip(
                           label: Text(
-                            _searchCategoryName ?? 'Категория',
+                            _searchCategoryName ??
+                                commerceText(context, 'Категория'),
                             style: TextStyle(
                               fontSize: 13,
                               color: context.brandPrimary,
@@ -461,10 +476,14 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                       )
                     : marketplace == Marketplace.jd
                     ? _MarketplaceSearchHint(
-                        title: 'Каталог JD',
+                        title: commerceText(context, 'Каталог JD'),
                         description: tr(
                           context,
-                          ru: 'Введите название товара. Каталог JD загружается из товарного канала, выданного компании $companyName.',
+                          ru: tr(
+                            context,
+                            ru: 'Введите название товара. Каталог JD загружается из товарного канала, выданного компании $companyName.',
+                            zh: '请输入商品名称。京东目录来自为$companyName提供的商品渠道。',
+                          ),
                           zh: '请输入商品名称。JD 目录来自为 $companyName 提供的商品渠道。',
                         ),
                       )
@@ -575,12 +594,20 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
       return '¥${_minPrice!.toStringAsFixed(0)}–${_maxPrice!.toStringAsFixed(0)}';
     }
     if (_minPrice != null) {
-      return 'от ¥${_minPrice!.toStringAsFixed(0)}';
+      return tr(
+        context,
+        ru: 'от ¥${_minPrice!.toStringAsFixed(0)}',
+        zh: '最低 ¥${_minPrice!.toStringAsFixed(0)}',
+      );
     }
     if (_maxPrice != null) {
-      return 'до ¥${_maxPrice!.toStringAsFixed(0)}';
+      return tr(
+        context,
+        ru: 'до ¥${_maxPrice!.toStringAsFixed(0)}',
+        zh: '最高 ¥${_maxPrice!.toStringAsFixed(0)}',
+      );
     }
-    return 'Цена';
+    return commerceText(context, 'Цена');
   }
 }
 
@@ -701,7 +728,7 @@ class _CategoriesViewState extends ConsumerState<_CategoriesView> {
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          'Товары',
+                          commerceText(context, 'Товары'),
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
@@ -734,7 +761,10 @@ class _CategoriesViewState extends ConsumerState<_CategoriesView> {
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'Введите запрос для поиска товаров',
+                        commerceText(
+                          context,
+                          'Введите запрос для поиска товаров',
+                        ),
                         style: TextStyle(
                           fontSize: 15,
                           color: Colors.grey.shade500,
@@ -769,14 +799,14 @@ class _CategoriesViewState extends ConsumerState<_CategoriesView> {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Не удалось загрузить категории',
+                    commerceText(context, 'Не удалось загрузить категории'),
                     style: TextStyle(fontSize: 15, color: Colors.grey.shade500),
                   ),
                   const SizedBox(height: 12),
                   TextButton(
                     onPressed: () =>
                         ref.invalidate(shopCategoriesProvider(params)),
-                    child: const Text('Повторить'),
+                    child: Text(commerceText(context, 'Повторить')),
                   ),
                 ],
               ),

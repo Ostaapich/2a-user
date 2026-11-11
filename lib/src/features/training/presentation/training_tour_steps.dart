@@ -144,7 +144,6 @@ const _destinations = <String, List<(String, String, String?)>>{
     ('/news', 'news.open', null),
     ('/rules', 'rules.open', null),
     ('/support', 'support.message', null),
-    ('/', 'menu.report', null),
   ],
 };
 
@@ -275,8 +274,8 @@ List<TrainingTourPreparation> _preparations(
     'warehouse:3' => [
       hint(
         'warehouse.check',
-        'Нажмите «Проверить заполнение». В открывшемся окне будет кнопка выбора скриншота.',
-        '点击“检查填写”，打开窗口中的截图选择按钮。',
+        'Нажмите «Проверить заполнение» и сразу выберите скриншот. Затем автоматически откроется проверка.',
+        '点击“检查填写”后直接选择截图，随后会自动打开核对窗口。',
       ),
     ],
     'tracks:0' => [
@@ -472,7 +471,7 @@ String? _missingMessage(BuildContext context, String lessonId, int index) {
         );
 }
 
-/// Builds the full 12-lesson, 56-step tour without changing application state.
+/// Builds the full 12-lesson, 55-step tour without changing application state.
 /// Fails on structural content drift rather than silently omitting a lesson or
 /// assigning a new step the destination of another step.
 List<TrainingTourStep> trainingTourSteps(BuildContext context) {
@@ -523,8 +522,8 @@ List<TrainingTourStep> trainingTourSteps(BuildContext context) {
       );
     }
   }
-  if (steps.length != 56) {
-    throw StateError('Expected 56 training tour steps, got ${steps.length}.');
+  if (steps.length != 55) {
+    throw StateError('Expected 55 training tour steps, got ${steps.length}.');
   }
   return List.unmodifiable(steps);
 }

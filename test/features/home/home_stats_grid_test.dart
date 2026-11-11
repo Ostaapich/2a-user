@@ -25,6 +25,8 @@ void main() {
                   padding: const EdgeInsets.all(16),
                   child: HomeStatsGrid(
                     tracksValue: '12 345',
+                    pendingTracksValue: '12 336',
+                    warehouseTracksValue: '9',
                     assembliesValue: '37',
                     invoicesValue: '8',
                     bonusKgValue: '16.95',
@@ -39,18 +41,15 @@ void main() {
           ),
         );
         expect(tester.takeException(), isNull);
+        expect(find.text('В ожидании: 12 336'), findsOneWidget);
+        expect(find.text('На складе: 9'), findsOneWidget);
         final track = tester.getTopLeft(find.text('Треки'));
         final assembly = tester.getTopLeft(find.text('Сборки'));
         final invoice = tester.getTopLeft(find.text('Счета'));
         final bonus = tester.getTopLeft(find.text('Бонусные кг'));
         expect(track.dy, assembly.dy);
-        if (width - 32 >= 352 * scale) {
-          expect(invoice.dy, track.dy);
-          expect(bonus.dy, greaterThan(invoice.dy));
-        } else {
-          expect(invoice.dy, greaterThan(track.dy));
-          expect(bonus.dy, invoice.dy);
-        }
+        expect(invoice.dy, greaterThan(track.dy));
+        expect(bonus.dy, invoice.dy);
         expect(find.textContaining('за неделю'), findsNothing);
         await tester.tap(find.text('Треки'));
         expect(tapped, isTrue);

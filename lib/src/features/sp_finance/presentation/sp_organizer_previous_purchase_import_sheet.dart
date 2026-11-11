@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -141,20 +142,16 @@ class _SpOrganizerPreviousPurchaseImportSheetState
                         ),
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                AppSearchField(
                   key: const ValueKey('previous-purchase-search'),
                   controller: _searchController,
-                  textInputAction: TextInputAction.search,
                   onChanged: _onSearchChanged,
                   onSubmitted: (_) => _load(),
-                  decoration: SpFinanceUi.inputDecoration(
+                  textInputAction: TextInputAction.search,
+                  hintText: tr(
                     context,
-                    hintText: tr(
-                      context,
-                      ru: 'Товар, закупка, прошлый участник или ссылка',
-                      zh: '商品、采购、原参与者或链接',
-                    ),
-                    prefixIcon: Icons.search_rounded,
+                    ru: 'Товар, закупка, прошлый участник или ссылка',
+                    zh: '商品、采购、原参与者或链接',
                   ),
                 ),
                 const SizedBox(height: 12),

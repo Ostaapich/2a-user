@@ -1,3 +1,4 @@
+import '../../../core/ui/app_search_field.dart';
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -412,18 +413,14 @@ class _ProductsToolbar extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: TextField(
+                child: AppSearchField(
                   controller: controller,
                   onChanged: onChanged,
                   textInputAction: TextInputAction.search,
-                  decoration: SpFinanceUi.inputDecoration(
+                  hintText: tr(
                     context,
-                    hintText: tr(
-                      context,
-                      ru: 'Название, артикул или ссылка',
-                      zh: '名称、货号或链接',
-                    ),
-                    prefixIcon: Icons.search_rounded,
+                    ru: 'Название, артикул или ссылка',
+                    zh: '名称、货号或链接',
                   ),
                 ),
               ),

@@ -1,3 +1,4 @@
+import 'package:twoalogisticcabineuser/src/features/auth/data/auth_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -159,7 +160,14 @@ void main() {
         overrides: [
           trainingTargetRegistryProvider.overrideWithValue(registry),
           activeClientCodeProvider.overrideWith((_) => 'TEST'),
-          invoicesListProvider.overrideWith((_, _) async => [paid, unpaid]),
+          authProvider.overrideWith(_InvoiceFixtureAuth.new),
+          invoiceDirectoryProvider.overrideWith(
+            (_, _) async => InvoiceDirectoryPage(
+              items: [paid, unpaid],
+              total: 2,
+              hasMore: false,
+            ),
+          ),
           invoiceByIdProvider.overrideWith(
             (_, id) async => id == paid.id ? paid : unpaid,
           ),
@@ -259,4 +267,13 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await _frames(tester);
   });
+}
+
+class _InvoiceFixtureAuth extends AuthNotifier {
+  @override
+  AuthState build() => const AuthState(
+    isLoggedIn: true,
+    clientId: 1,
+    userDomain: 'fixture.invalid',
+  );
 }

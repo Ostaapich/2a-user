@@ -198,7 +198,7 @@ void main() {
   );
 
   testWidgets(
-    'localized tour covers 56 unique steps and 19 registered routes',
+    'localized tour covers 55 unique steps and 19 registered routes',
     (tester) async {
       const routes = {
         '/',
@@ -246,8 +246,9 @@ void main() {
         final context = tester.element(find.byType(Scaffold));
         final tour = trainingTourSteps(context);
         final lessons = trainingLessons(context);
-        expect(tour, hasLength(56));
-        expect(tour.map((step) => step.id).toSet(), hasLength(56));
+        expect(tour, hasLength(55));
+        expect(tour.any((step) => step.targetId == 'menu.report'), isFalse);
+        expect(tour.map((step) => step.id).toSet(), hasLength(55));
         expect(tour.map((step) => step.route).toSet(), routes);
         expect(tour.map((step) => step.lessonId).toSet(), hasLength(12));
         for (final step in tour) {

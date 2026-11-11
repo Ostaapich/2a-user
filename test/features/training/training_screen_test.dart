@@ -144,6 +144,28 @@ void main() {
   });
 
   testWidgets(
+    'failed persistence still opens and advances reading, then retries',
+    (tester) async {
+      final store = _FailingProgressStore(
+        await SharedPreferences.getInstance(),
+      );
+      await pumpTraining(tester, progressStore: store);
+      await tapKey(tester, 'training-continue');
+      expect(find.byKey(const Key('training-next')), findsOneWidget);
+      await tapKey(tester, 'training-next');
+      expect(
+        find.textContaining('Прогресс пока сохранён только'),
+        findsOneWidget,
+      );
+      expect(store.read().steps['cabinet'], isNull);
+      store.fail = false;
+      await tapKey(tester, 'training-retry-save');
+      expect(store.read().steps['cabinet'], 1);
+      expect(find.byKey(const Key('training-retry-save')), findsNothing);
+    },
+  );
+
+  testWidgets(
     'Chinese catalog and lesson fit a narrow viewport with large text',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(320, 740));
@@ -160,4 +182,12 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+}
+
+class _FailingProgressStore extends TrainingProgressStore {
+  _FailingProgressStore(super.preferences) : super(accountKey: 'failing');
+  bool fail = true;
+  @override
+  Future<bool> save(TrainingProgress progress) async =>
+      fail ? false : super.save(progress);
 }

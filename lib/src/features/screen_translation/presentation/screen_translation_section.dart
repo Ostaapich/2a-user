@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,8 +11,20 @@ import '../../../core/ui/app_colors.dart';
 import '../../../core/utils/locale_text.dart';
 import '../../auth/data/auth_provider.dart';
 
-/// The disabled/platform gate stays outside Consumer so it cannot initialize auth.
-class ScreenTranslationSection extends StatelessWidget {
+/// Read only platform metadata; auth and translation sessions stay uninitialized.
+final screenTranslationIOSVersionProvider = FutureProvider<String?>((
+  ref,
+) async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return null;
+  try {
+    return (await DeviceInfoPlugin().iosInfo).systemVersion;
+  } catch (_) {
+    return null;
+  }
+});
+
+/// Version availability is checked before mounting the auth/session owner.
+class ScreenTranslationSection extends ConsumerWidget {
   const ScreenTranslationSection({
     super.key,
     this.enabled = featureEnabled,
@@ -30,13 +43,27 @@ class ScreenTranslationSection extends StatelessWidget {
 
   /// Reuses the session owner in a menu without removing it during native launch.
   /// Disabled/platform-unsupported builds receive no action and initialize no auth.
-  final Widget Function(BuildContext context, VoidCallback? onPressed)?
+  final Widget Function(
+    BuildContext context,
+    VoidCallback? onPressed,
+    bool supported,
+  )?
   actionBuilder;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     if (!available(enabled: enabled)) {
-      return actionBuilder?.call(context, null) ?? const SizedBox.shrink();
+      return actionBuilder?.call(context, null, false) ??
+          const SizedBox.shrink();
+    }
+    final version = ref
+        .watch(screenTranslationIOSVersionProvider)
+        .asData
+        ?.value;
+    final major = int.tryParse(version?.split('.').first ?? '');
+    if (major == null || major < 27) {
+      return actionBuilder?.call(context, null, false) ??
+          const SizedBox.shrink();
     }
     return _ScreenTranslationCard(actionBuilder: actionBuilder);
   }
@@ -45,7 +72,11 @@ class ScreenTranslationSection extends StatelessWidget {
 class _ScreenTranslationCard extends ConsumerStatefulWidget {
   const _ScreenTranslationCard({this.actionBuilder});
 
-  final Widget Function(BuildContext context, VoidCallback? onPressed)?
+  final Widget Function(
+    BuildContext context,
+    VoidCallback? onPressed,
+    bool supported,
+  )?
   actionBuilder;
 
   @override
@@ -181,7 +212,7 @@ class _ScreenTranslationCardState
     });
     final actionBuilder = widget.actionBuilder;
     if (actionBuilder != null) {
-      return actionBuilder(context, _busy ? null : _present);
+      return actionBuilder(context, _busy ? null : _present, true);
     }
     return Padding(
       padding: const EdgeInsets.only(bottom: 15),

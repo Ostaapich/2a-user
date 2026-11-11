@@ -20,27 +20,37 @@ final rulesListProvider = FutureProvider<List<RuleItem>>((ref) async {
   }
 
   try {
-    final response = await apiClient.get(
-      '/service-rules',
-      queryParameters: {
-        'agentId': agentId,
-        'status': 'published', // Показываем только опубликованные
-        'take': 50,
-      },
-    );
-
-    if (response.statusCode == 200 && response.data != null) {
-      final data = response.data as Map<String, dynamic>;
-      final rulesJson = data['data'] as List<dynamic>? ?? [];
-
-      return rulesJson
-          .map((json) => RuleItem.fromJson(json as Map<String, dynamic>))
-          .toList();
+    final all = <RuleItem>[];
+    for (var page = 0; page < 100; page++) {
+      final response = await apiClient.get(
+        '/service-rules',
+        queryParameters: {
+          'agentId': agentId,
+          'status': 'published',
+          'take': 50,
+          'skip': all.length,
+        },
+      );
+      if (response.statusCode != 200 || response.data is! Map) {
+        throw const FormatException('Invalid rules response');
+      }
+      final data = response.data as Map;
+      final rows = data['data'] as List<dynamic>? ?? [];
+      all.addAll(
+        rows.map((json) => RuleItem.fromJson(json as Map<String, dynamic>)),
+      );
+      final total = (data['total'] as num?)?.toInt();
+      final hasMore =
+          data['hasMore'] == true || (total != null && all.length < total);
+      if (!hasMore) return all;
+      if (rows.isEmpty) {
+        throw const FormatException('Incomplete rules response');
+      }
     }
-    return [];
+    throw const FormatException('Rules pagination limit exceeded');
   } on DioException catch (e) {
     debugPrint('Error loading rules: $e');
-    return [];
+    rethrow;
   }
 });
 
@@ -66,7 +76,8 @@ final ruleItemProvider = FutureProvider.family<RuleItem?, String>((
         return RuleItem.fromJson(raw);
       }
     } on DioException catch (e) {
-      debugPrint('Rule fetchById fallback: $e');
+      if (e.response?.statusCode == 404) return null;
+      rethrow;
     }
   }
 

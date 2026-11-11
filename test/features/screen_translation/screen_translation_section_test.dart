@@ -80,6 +80,8 @@ void main() {
     _Api api, {
     bool enabled = true,
     bool forbidProviders = false,
+    String? iosVersion = '27.0',
+    bool versionError = false,
     Locale locale = const Locale('ru'),
     ThemeData? theme,
   }) async {
@@ -87,6 +89,10 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          screenTranslationIOSVersionProvider.overrideWith((ref) async {
+            if (versionError) throw StateError('Version unavailable');
+            return iosVersion;
+          }),
           apiClientProvider.overrideWith((ref) {
             if (forbidProviders) {
               throw StateError('API must stay uninitialized');
@@ -144,6 +150,32 @@ void main() {
     expect(api.tokenReads, 0);
     expect(calls, isEmpty);
     await tester.pumpWidget(const SizedBox.shrink());
+    expect(calls, isEmpty);
+  });
+
+  for (final version in ['26.9', '18.7', '', 'unknown', null]) {
+    iosTest('unsupported iOS $version hides entry without auth or API', (
+      tester,
+    ) async {
+      final api = _Api();
+      await pump(tester, api, iosVersion: version, forbidProviders: true);
+      expect(find.byType(OutlinedButton), findsNothing);
+      expect(api.tokenReads, 0);
+      expect(calls, isEmpty);
+    });
+  }
+
+  iosTest('version lookup failure hides entry without auth or API', (
+    tester,
+  ) async {
+    await pump(tester, _Api(), versionError: true, forbidProviders: true);
+    expect(find.byType(OutlinedButton), findsNothing);
+    expect(calls, isEmpty);
+  });
+
+  iosTest('iOS 28 remains supported', (tester) async {
+    await pump(tester, _Api(), iosVersion: '28.0');
+    expect(find.byType(OutlinedButton), findsOneWidget);
     expect(calls, isEmpty);
   });
 

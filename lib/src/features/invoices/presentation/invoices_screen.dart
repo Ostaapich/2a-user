@@ -1,3 +1,4 @@
+import '../../auth/data/auth_provider.dart';
 import 'package:twoalogisticcabineuser/src/core/media/authenticated_media.dart';
 import 'dart:async';
 import 'dart:math';
@@ -22,16 +23,17 @@ import '../../../core/ui/sheet_handle.dart';
 import '../../../core/ui/status_timeline_sheet.dart';
 import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/app_input_decoration.dart';
+import '../../../core/ui/app_search_field.dart';
 import '../../../core/network/api_config.dart';
 import '../../../core/utils/locale_text.dart';
 import '../../carriers/presentation/client_carrier_tracking_panel.dart';
 import '../../payments/data/payment_operator_status.dart';
 import '../../payments/presentation/bank_qr_payment_screen.dart';
 import '../../payments/data/invoice_payment_options.dart';
+import '../../payments/data/invoice_payment_method_drafts.dart';
 import '../../payments/presentation/invoice_payment_method_sheet.dart';
 import '../../payments/presentation/client_payment_summary_panel.dart';
 import '../../payments/presentation/payment_operator_sleeping_notice.dart';
-import '../../../core/utils/error_utils.dart';
 import '../../clients/application/client_codes_controller.dart';
 import '../../assemblies/domain/box.dart';
 import '../../photos/domain/photo_item.dart';
@@ -82,13 +84,12 @@ Color? _parseHexColor(String? hexString) {
   }
 }
 
-String _formatUsdAmount(num value, {bool withCents = false}) {
-  final money = NumberFormat.decimalPattern('ru');
-  if (withCents) {
-    return '\$${value.toStringAsFixed(2)}';
-  }
-  return '\$${money.format(value.round())}';
-}
+String _formatInvoiceAmount(num value) => NumberFormat.decimalPatternDigits(
+  locale: 'ru',
+  decimalDigits: 2,
+).format(value);
+
+String _formatUsdAmount(num value) => '\$${_formatInvoiceAmount(value)}';
 
 bool _isInvoiceUnpaid(InvoiceItem item) {
   final status = item.status.toLowerCase();
@@ -145,8 +146,8 @@ String _earlyPaymentBenefitValue(
           ? tr(context, ru: 'Страховка за наш счёт', zh: '保险费用由我们承担')
           : tr(
               context,
-              ru: 'Экономия \$${value.waivedInsuranceUsd!.toStringAsFixed(2)}',
-              zh: '节省 \$${value.waivedInsuranceUsd!.toStringAsFixed(2)}',
+              ru: 'Страховка за наш счёт — до \$${value.waivedInsuranceUsd!.toStringAsFixed(2)}',
+              zh: '保险费用由我们承担，最高 \$${value.waivedInsuranceUsd!.toStringAsFixed(2)}',
             ),
     EarlyPaymentBenefitType.bonusKg =>
       value.bonusKg == null
@@ -234,6 +235,8 @@ Future<bool> _requestInvoicePaymentStatus(
   void invalidateInvoiceData() {
     if (activeCode != null) {
       ref.invalidate(invoicesListProvider(activeCode));
+      ref.invalidate(invoiceDirectoryPageProvider);
+      ref.invalidate(invoiceDirectoryProvider);
       ref.invalidate(invoicesDigestProvider(activeCode));
       ref.invalidate(invoicesCountProvider(activeCode));
     }
@@ -300,6 +303,18 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
   final ScrollController _scrollController = ScrollController();
   String? _selectedStatusCode; // null = "Все"
   String _query = '';
+  String _serverQuery = '';
+  int _loadedPages = 1;
+  Timer? _searchDebounce;
+  InvoiceDirectoryPage? _lastDirectoryPage;
+  ({
+    String clientCode,
+    String search,
+    String? status,
+    int? clientId,
+    String? domain,
+  })?
+  _lastDirectoryKey;
 
   final GlobalKey _invoicesListKey = GlobalKey();
   final GlobalKey _filtersKey = GlobalKey();
@@ -324,18 +339,16 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
     }
   }
 
-  List<InvoiceItem> _applyFilters(List<InvoiceItem> items) {
-    final q = _query.trim().toLowerCase();
-    return items.where((inv) {
-      // Фильтр по статусу (сравниваем по коду статуса)
-      final statusOk =
-          _selectedStatusCode == null || inv.status == _selectedStatusCode;
-      final queryOk = q.isEmpty
-          ? true
-          : inv.invoiceNumber.toLowerCase().contains(q) ||
-                inv.tariffName?.toLowerCase().contains(q) == true;
-      return statusOk && queryOk;
-    }).toList();
+  void _setQuery(String value) {
+    setState(() => _query = value);
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      setState(() {
+        _serverQuery = value.trim();
+        _loadedPages = 1;
+      });
+    });
   }
 
   String? _clientCodeSwitchTarget(String activeCode) {
@@ -473,6 +486,8 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
           final activeCode = ref.read(activeClientCodeProvider);
           if (activeCode != null) {
             ref.invalidate(invoicesListProvider(activeCode));
+            ref.invalidate(invoiceDirectoryPageProvider);
+            ref.invalidate(invoiceDirectoryProvider);
           }
           ref.invalidate(referralProvider);
         },
@@ -489,7 +504,6 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
     );
     if (!paymentRequested || !mounted) return;
 
-    final money = NumberFormat.decimalPattern('ru');
     final buffer = StringBuffer();
     buffer.writeln('💳 **Запрос на оплату счёта**');
     buffer.writeln('━━━━━━━━━━━━━━━━━━━━');
@@ -497,15 +511,15 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
     buffer.writeln('🔢 Номер: ${item.invoiceNumber}');
     buffer.writeln('📊 Статус: В обработке');
     buffer.writeln('');
-    buffer.writeln('💵 К оплате: \$${money.format(item.totalCostUsd.round())}');
+    buffer.writeln('💵 К оплате: ${_formatUsdAmount(item.totalCostUsd)}');
     if (item.totalCostCny > 0) {
       buffer.writeln(
-        '🇨🇳 К оплате: ¥${money.format(item.totalCostCny.round())}',
+        '🇨🇳 К оплате: ¥${_formatInvoiceAmount(item.totalCostCny)}',
       );
     }
     if (item.totalCostRub > 0) {
       buffer.writeln(
-        '🇷🇺 К оплате: ${money.format(item.totalCostRub.round())} ₽',
+        '🇷🇺 К оплате: ${_formatInvoiceAmount(item.totalCostRub)} ₽',
       );
     }
 
@@ -539,7 +553,10 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
     );
 
     if (result == null || !mounted) return;
-    setState(() => _selectedStatusCode = result.statusCode);
+    setState(() {
+      _selectedStatusCode = result.statusCode;
+      _loadedPages = 1;
+    });
   }
 
   @override
@@ -549,6 +566,8 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
       final activeCode = ref.read(activeClientCodeProvider);
       if (activeCode != null) {
         ref.invalidate(invoicesListProvider(activeCode));
+        ref.invalidate(invoiceDirectoryPageProvider);
+        ref.invalidate(invoiceDirectoryProvider);
       }
       ref.invalidate(invoiceStatusesProvider);
     });
@@ -568,7 +587,31 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final invoicesAsync = ref.watch(invoicesListProvider(clientCode));
+    final directoryQuery = (
+      clientCode: clientCode,
+      search: _serverQuery,
+      status: _selectedStatusCode,
+      pages: _loadedPages,
+    );
+    final requestAsync = ref.watch(invoiceDirectoryProvider(directoryQuery));
+    final identity = ref.watch(
+      authProvider.select((state) => (state.clientId, state.userDomain)),
+    );
+    final directoryKey = (
+      clientCode: clientCode,
+      search: _serverQuery,
+      status: _selectedStatusCode,
+      clientId: identity.$1,
+      domain: identity.$2,
+    );
+    AsyncValue<InvoiceDirectoryPage> invoicesAsync = requestAsync;
+    if (requestAsync.asData?.value case final page?) {
+      _lastDirectoryPage = page;
+      _lastDirectoryKey = directoryKey;
+    } else if (_lastDirectoryKey == directoryKey &&
+        _lastDirectoryPage != null) {
+      invoicesAsync = AsyncData(_lastDirectoryPage!);
+    }
     final statusesAsync = ref.watch(invoiceStatusesProvider);
     final bottomPad = AppLayout.bottomScrollPadding(context);
     final topPad = AppLayout.topBarTotalHeight(context);
@@ -576,8 +619,10 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
     Future<void> onRefresh() async {
       debugPrint('[Invoices] pull-to-refresh triggered');
       ref.invalidate(invoicesListProvider(clientCode));
+      ref.invalidate(invoiceDirectoryPageProvider);
+      ref.invalidate(invoiceDirectoryProvider);
       ref.invalidate(invoiceStatusesProvider);
-      await ref.read(invoicesListProvider(clientCode).future);
+      await ref.read(invoiceDirectoryProvider(directoryQuery).future);
       debugPrint('[Invoices] pull-to-refresh completed');
     }
 
@@ -587,138 +632,193 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen> {
       error: (_, _) => <InvoiceStatus>[],
     );
 
-    return invoicesAsync.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) {
-        final errorInfo = ErrorUtils.getErrorInfo(e);
-        return EmptyState(
-          icon: errorInfo.icon,
-          title: errorInfo.title,
-          message: errorInfo.message,
-        );
-      },
-      data: (items) {
+    // Keep the focused search field mounted while a new query is pending.
+    // Only a cache with the exact account/query key may supply previous rows.
+    Widget buildDirectory(InvoiceDirectoryPage page) {
+      final items = page.items;
+      if (invoicesAsync.hasValue) {
         _maybeOpenInitialInvoice(items, clientCode);
-        final filtered = _applyFilters(items);
-        final firstPayableIndex = filtered.indexWhere(canOpenInvoicePayment);
+      }
+      final filtered = items;
+      final firstPayableIndex = filtered.indexWhere(canOpenInvoicePayment);
 
-        return TutorialScreenWrapper(
-          screenKey: 'invoices',
-          steps: [
-            TutorialStep(
-              icon: Icons.receipt_long_rounded,
-              title: 'Счета на оплату',
-              description:
-                  'Счёт выставляется после взвешивания посылок на складе в России. Здесь указан точный итог к оплате.',
-              targetKey: _invoicesListKey,
-            ),
-            TutorialStep(
-              icon: Icons.info_rounded,
-              title: 'Статус счёта',
-              description:
-                  '«Требует оплаты» — необходимо оплатить, посылка ждёт. «Оплачен» — посылка уже передана в доставку.',
-              targetKey: _firstInvoiceKey,
-            ),
-            TutorialStep(
-              icon: Icons.filter_alt_rounded,
-              title: 'Фильтр и поиск',
-              description:
-                  'Фильтруйте счета по статусу или ищите по номеру. Актуально когда счетов накопилось много.',
-              targetKey: _filtersKey,
-            ),
-            TutorialStep(
-              icon: Icons.payment_rounded,
-              title: 'Оплатить счёт',
-              description:
-                  'Нажмите на счёт → откроется карточка с деталями. Кнопка «Оплатить» открывает выбор способа оплаты.',
-              targetKey: _firstInvoiceKey,
-            ),
-            TutorialStep(
-              icon: Icons.redeem_rounded,
-              title: 'Бонусные килограммы',
-              description:
-                  'Если у вас есть бонусный вес из реферальной программы — нажмите «Применить бонус» перед оплатой. Он вычтется из суммы счёта.',
-              targetKey: _firstInvoiceKey,
-            ),
-          ],
-          child: Stack(
-            children: [
-              RefreshIndicator(
-                onRefresh: onRefresh,
-                color: context.brandPrimary,
-                child: ListView.builder(
-                  controller: _scrollController,
-                  key: _invoicesListKey,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: EdgeInsets.fromLTRB(
-                    16,
-                    topPad * 0.7 + 14,
-                    16,
-                    bottomPad + 16,
-                  ),
-                  addAutomaticKeepAlives: false,
-                  addSemanticIndexes: false,
-                  itemCount: filtered.isEmpty ? 4 : filtered.length + 3,
-                  itemBuilder: (context, index) {
-                    if (index == 0) {
-                      return const _InvoicesHeroHeader();
-                    }
-                    if (index == 1) {
-                      return Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: _InvoiceControlsCard(
-                          filtersKey: _filtersKey,
-                          isFilterActive: _selectedStatusCode != null,
-                          query: _query,
-                          onFilterTap: () =>
-                              _showInvoiceFiltersSheet(dbStatuses),
-                          onQueryChanged: (value) =>
-                              setState(() => _query = value),
-                          onClear: () => setState(() => _query = ''),
-                        ),
-                      );
-                    }
-                    if (index == 2) {
-                      return const SizedBox(height: 15);
-                    }
-                    if (filtered.isEmpty) {
-                      return const EmptyState(
-                        icon: Icons.receipt_long_outlined,
-                        title: 'Ничего не найдено',
-                        message:
-                            'Попробуйте изменить фильтры или строку поиска.',
-                      );
-                    }
-
-                    final invoiceIndex = index - 3;
-                    final invoiceTile = ClientInvoiceTile(
-                      item: filtered[invoiceIndex],
-                      clientCode: clientCode,
-                      trainingTarget: invoiceIndex == 0,
-                      trainingPayableTarget: invoiceIndex == firstPayableIndex,
-                    );
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: invoiceIndex == 0
-                          ? KeyedSubtree(
-                              key: _firstInvoiceKey,
-                              child: invoiceTile,
-                            )
-                          : invoiceTile,
-                    );
-                  },
-                ),
-              ),
-              ScrollToTopButton(controller: _scrollController),
-            ],
+      return TutorialScreenWrapper(
+        screenKey: 'invoices',
+        steps: [
+          TutorialStep(
+            icon: Icons.receipt_long_rounded,
+            title: 'Счета на оплату',
+            description:
+                'Счёт выставляется после взвешивания посылок на складе в России. Здесь указан точный итог к оплате.',
+            targetKey: _invoicesListKey,
           ),
-        );
-      },
+          TutorialStep(
+            icon: Icons.info_rounded,
+            title: 'Статус счёта',
+            description:
+                '«Требует оплаты» — необходимо оплатить, посылка ждёт. «Оплачен» — посылка уже передана в доставку.',
+            targetKey: _firstInvoiceKey,
+          ),
+          TutorialStep(
+            icon: Icons.filter_alt_rounded,
+            title: 'Фильтр и поиск',
+            description:
+                'Фильтруйте счета по статусу или ищите по номеру. Актуально когда счетов накопилось много.',
+            targetKey: _filtersKey,
+          ),
+          TutorialStep(
+            icon: Icons.payment_rounded,
+            title: 'Оплатить счёт',
+            description:
+                'Нажмите на счёт → откроется карточка с деталями. Кнопка «Оплатить» открывает выбор способа оплаты.',
+            targetKey: _firstInvoiceKey,
+          ),
+          TutorialStep(
+            icon: Icons.redeem_rounded,
+            title: 'Бонусные килограммы',
+            description:
+                'Если у вас есть бонусный вес из реферальной программы — нажмите «Применить бонус» перед оплатой. Он вычтется из суммы счёта.',
+            targetKey: _firstInvoiceKey,
+          ),
+        ],
+        child: Stack(
+          children: [
+            RefreshIndicator(
+              onRefresh: onRefresh,
+              color: context.brandPrimary,
+              child: ListView.builder(
+                controller: _scrollController,
+                key: _invoicesListKey,
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  topPad * 0.7 + 14,
+                  16,
+                  bottomPad + 16,
+                ),
+                addAutomaticKeepAlives: false,
+                addSemanticIndexes: false,
+                itemCount: filtered.isEmpty
+                    ? 4
+                    : filtered.length + 3 + (page.hasMore ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return const _InvoicesHeroHeader();
+                  }
+                  if (index == 1) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: _InvoiceControlsCard(
+                        filtersKey: _filtersKey,
+                        isFilterActive: _selectedStatusCode != null,
+                        query: _query,
+                        onFilterTap: () => _showInvoiceFiltersSheet(dbStatuses),
+                        onQueryChanged: _setQuery,
+                        onClear: () => _setQuery(''),
+                      ),
+                    );
+                  }
+                  if (index == 2) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: requestAsync.hasError
+                          ? TextFieldTapRegion(
+                              child: TextButton.icon(
+                                onPressed: onRefresh,
+                                icon: const Icon(Icons.refresh),
+                                label: Text(
+                                  filtered.isEmpty
+                                      ? tr(
+                                          context,
+                                          ru: 'Не удалось загрузить счета. Повторить',
+                                          zh: '无法加载账单，重试',
+                                        )
+                                      : tr(
+                                          context,
+                                          ru: 'Не удалось обновить счета. Показаны ранее загруженные данные. Повторить',
+                                          zh: '无法刷新账单。当前显示之前加载的数据，点击重试',
+                                        ),
+                                ),
+                              ),
+                            )
+                          : requestAsync.isLoading
+                          ? const LinearProgressIndicator()
+                          : const SizedBox(height: 3),
+                    );
+                  }
+                  if (filtered.isEmpty) {
+                    if (requestAsync.isLoading || requestAsync.hasError) {
+                      return const SizedBox.shrink();
+                    }
+                    return const EmptyState(
+                      icon: Icons.receipt_long_outlined,
+                      title: 'Ничего не найдено',
+                      message: 'Попробуйте изменить фильтры или строку поиска.',
+                    );
+                  }
+
+                  final invoiceIndex = index - 3;
+                  if (invoiceIndex == filtered.length) {
+                    return TextButton.icon(
+                      onPressed: requestAsync.isLoading
+                          ? null
+                          : () {
+                              if (requestAsync.hasError) {
+                                ref.invalidate(invoiceDirectoryPageProvider);
+                                ref.invalidate(invoiceDirectoryProvider);
+                              } else {
+                                setState(() => _loadedPages++);
+                              }
+                            },
+                      icon: const Icon(Icons.expand_more),
+                      label: Text(
+                        requestAsync.hasError
+                            ? tr(
+                                context,
+                                ru: 'Не удалось загрузить следующую страницу. Повторить',
+                                zh: '无法加载下一页，重试',
+                              )
+                            : tr(
+                                context,
+                                ru: 'Загрузить ещё · ${items.length} из ${page.total}',
+                                zh: '加载更多 · ${items.length}/${page.total}',
+                              ),
+                      ),
+                    );
+                  }
+                  final invoiceTile = ClientInvoiceTile(
+                    item: filtered[invoiceIndex],
+                    clientCode: clientCode,
+                    trainingTarget: invoiceIndex == 0,
+                    trainingPayableTarget: invoiceIndex == firstPayableIndex,
+                  );
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: invoiceIndex == 0
+                        ? KeyedSubtree(
+                            key: _firstInvoiceKey,
+                            child: invoiceTile,
+                          )
+                        : invoiceTile,
+                  );
+                },
+              ),
+            ),
+            ScrollToTopButton(controller: _scrollController),
+          ],
+        ),
+      );
+    }
+
+    return buildDirectory(
+      invoicesAsync.asData?.value ??
+          const InvoiceDirectoryPage(items: [], total: 0, hasMore: false),
     );
   }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
@@ -1063,65 +1163,17 @@ class _InvoiceSearchFieldState extends State<_InvoiceSearchField> {
 
   @override
   Widget build(BuildContext context) {
-    return AppOutlinedInputFrame(
-      height: 48,
-      radius: 18,
-      fillColor: const Color(0xFFF8FAFC),
-      borderColor: const Color(0xFFE3E7EE),
-      builder: (context, focusNode) => TextField(
-        focusNode: focusNode,
-        controller: _controller,
-        style: const TextStyle(
-          fontFamily: 'Gilroy',
-          fontSize: 14.5,
-          fontWeight: FontWeight.w700,
-          color: AppColors.textPrimary,
-          letterSpacing: 0,
-        ),
-        decoration: InputDecoration(
-          prefixIcon: focusNode.hasFocus
-              ? null
-              : Icon(
-                  Icons.search_rounded,
-                  color: context.brandPrimary,
-                  size: 22,
-                ),
-          suffixIcon: _controller.text.isNotEmpty
-              ? IconButton(
-                  onPressed: () {
-                    _controller.clear();
-                    setState(() {});
-                    widget.onClear();
-                  },
-                  icon: const Icon(
-                    Icons.close_rounded,
-                    color: AppColors.textSecondary,
-                    size: 20,
-                  ),
-                )
-              : null,
-          hintText: 'Поиск по счёту',
-          hintStyle: const TextStyle(
-            fontFamily: 'Gilroy',
-            fontSize: 14.5,
-            fontWeight: FontWeight.w600,
-            color: AppColors.textSecondary,
-            letterSpacing: 0,
-          ),
-          border: InputBorder.none,
-          contentPadding: EdgeInsets.fromLTRB(
-            focusNode.hasFocus ? 16 : 0,
-            14,
-            12,
-            14,
-          ),
-          isDense: true,
-        ),
-        onChanged: (value) {
-          setState(() {});
-          widget.onChanged(value);
-        },
-      ),
+    return AppSearchField(
+      controller: _controller,
+      hintText: tr(context, ru: 'Поиск по счёту', zh: '按账单搜索'),
+      onChanged: (value) {
+        setState(() {});
+        widget.onChanged(value);
+      },
+      onClear: () {
+        setState(() {});
+        widget.onClear();
+      },
     );
   }
 }
@@ -1613,7 +1665,6 @@ class _InvoiceDetailSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final money = NumberFormat.decimalPattern('ru');
     final amountUsd = _formatUsdAmount(item.totalCostUsd);
 
     return Container(
@@ -1661,7 +1712,7 @@ class _InvoiceDetailSummaryCard extends StatelessWidget {
                 child: _InvoiceSmallAmount(
                   label: 'Стоимость в рублях',
                   value: item.totalCostRub > 0
-                      ? '${money.format(item.totalCostRub.round())} ₽'
+                      ? '${_formatInvoiceAmount(item.totalCostRub)} ₽'
                       : '—',
                 ),
               ),
@@ -1670,7 +1721,7 @@ class _InvoiceDetailSummaryCard extends StatelessWidget {
                 child: _InvoiceSmallAmount(
                   label: 'Стоимость в юанях',
                   value: item.totalCostCny > 0
-                      ? '¥${money.format(item.totalCostCny.round())}'
+                      ? '¥${_formatInvoiceAmount(item.totalCostCny)}'
                       : '—',
                 ),
               ),
@@ -1796,6 +1847,8 @@ class ClientInvoiceTileState extends ConsumerState<ClientInvoiceTile> {
           final clientCode = ref.read(activeClientCodeProvider);
           if (clientCode != null) {
             ref.invalidate(invoicesListProvider(clientCode));
+            ref.invalidate(invoiceDirectoryPageProvider);
+            ref.invalidate(invoiceDirectoryProvider);
           }
           ref.invalidate(referralProvider);
         },
@@ -1858,7 +1911,6 @@ class ClientInvoiceTileState extends ConsumerState<ClientInvoiceTile> {
 
   void _goToPaymentChat(BuildContext context) {
     if (!mounted) return;
-    final money = NumberFormat.decimalPattern('ru');
     final item = widget.item;
     final buffer = StringBuffer();
     buffer.writeln('💳 **Запрос на оплату счёта**');
@@ -1867,15 +1919,15 @@ class ClientInvoiceTileState extends ConsumerState<ClientInvoiceTile> {
     buffer.writeln('🔢 Номер: ${item.invoiceNumber}');
     buffer.writeln('📊 Статус: В обработке');
     buffer.writeln('');
-    buffer.writeln('💵 К оплате: \$${money.format(item.totalCostUsd.round())}');
+    buffer.writeln('💵 К оплате: ${_formatUsdAmount(item.totalCostUsd)}');
     if (item.totalCostCny > 0) {
       buffer.writeln(
-        '🇨🇳 К оплате: ¥${money.format(item.totalCostCny.round())}',
+        '🇨🇳 К оплате: ¥${_formatInvoiceAmount(item.totalCostCny)}',
       );
     }
     if (item.totalCostRub > 0) {
       buffer.writeln(
-        '🇷🇺 К оплате: ${money.format(item.totalCostRub.round())} ₽',
+        '🇷🇺 К оплате: ${_formatInvoiceAmount(item.totalCostRub)} ₽',
       );
     }
     if (item.clientRubRate != null ||
@@ -1920,6 +1972,8 @@ class ClientInvoiceTileState extends ConsumerState<ClientInvoiceTile> {
             final clientCode = ref.read(activeClientCodeProvider);
             if (clientCode != null) {
               ref.invalidate(invoicesListProvider(clientCode));
+              ref.invalidate(invoiceDirectoryPageProvider);
+              ref.invalidate(invoiceDirectoryProvider);
             }
           }
         });
@@ -2875,6 +2929,8 @@ class _InvoiceDetailSheetState extends ConsumerState<_InvoiceDetailSheet> {
     final activeCode = ref.read(activeClientCodeProvider);
     if (activeCode != null) {
       ref.invalidate(invoicesListProvider(activeCode));
+      ref.invalidate(invoiceDirectoryPageProvider);
+      ref.invalidate(invoiceDirectoryProvider);
       ref.invalidate(invoicesDigestProvider(activeCode));
       ref.invalidate(invoicesCountProvider(activeCode));
     }
@@ -3031,13 +3087,91 @@ class _InvoiceDetailSheetState extends ConsumerState<_InvoiceDetailSheet> {
 
   Future<void> _openInvoicePayment() async {
     final item = _currentItem;
+    final paymentOwner = ref.read(authProvider);
+    final ownerKey = (
+      paymentOwner.isLoggedIn,
+      paymentOwner.clientId,
+      paymentOwner.userDomain,
+    );
+    final clientCode = ref.read(activeClientCodeProvider);
+    bool sameOwner() {
+      final current = ref.read(authProvider);
+      return ownerKey ==
+              (current.isLoggedIn, current.clientId, current.userDomain) &&
+          clientCode != null &&
+          ref.read(activeClientCodeProvider) == clientCode;
+    }
+
+    if (!paymentOwner.isLoggedIn || !sameOwner()) return;
     if (!await _ensureEarlyPaymentBenefitSelected(item)) return;
-    if (!mounted) return;
-    if (!await _ensurePaymentOperatorsWorking()) return;
-    if (!mounted) return;
+    if (!mounted || !sameOwner()) return;
+    InvoicePaymentOptions options;
+    try {
+      options = await ref
+          .read(invoicePaymentOptionsServiceProvider)
+          .fetch(item.id);
+    } catch (_) {
+      if (!mounted || !sameOwner()) return;
+      AppToast.show(
+        context,
+        tr(
+          context,
+          ru: 'Не удалось загрузить текущую оплату. Повторите.',
+          zh: '无法加载现有付款，请重试',
+        ),
+        isError: true,
+      );
+      return;
+    }
+    if (!mounted || !sameOwner()) return;
+    final existing = options.activePayment;
+    final activeMethod = options.activeMethod;
+    final draft = ref
+        .read(invoicePaymentMethodDraftsProvider)
+        .selected(item.id);
+    final draftChangesMethod =
+        draft != null &&
+        draft != activeMethod &&
+        options.methods.any(
+          (method) => method.code == draft && method.available,
+        );
+    final selectedMethodAvailable = options.methods.any(
+      (method) => method.code == activeMethod && method.available,
+    );
+    final canResumeSelected =
+        options.canChange &&
+        options.lockedReason == null &&
+        selectedMethodAvailable &&
+        !draftChangesMethod &&
+        const {'bank_qr', 'usdt_trc20', 'alipay'}.contains(activeMethod);
+    InvoicePaymentSelection? resume = options.resumablePayment(
+      draftMethod: draft,
+    );
+    var needsBankStart = false;
+    if (canResumeSelected) {
+      if (resume == null &&
+          !options.hasResumeDecision &&
+          activeMethod == 'bank_qr' &&
+          existing == null) {
+        // Older GET responses omit bank snapshots. The user's Pay action may
+        // reopen through the existing authenticated, idempotent start endpoint,
+        // which revalidates ownership, current quote and receipt locks itself.
+        resume = const InvoicePaymentSelection(
+          method: 'bank_qr',
+          canChange: true,
+        );
+        needsBankStart = true;
+      }
+    }
+    if ((resume == null || needsBankStart) &&
+        !await _ensurePaymentOperatorsWorking()) {
+      return;
+    }
+    if (!mounted || !sameOwner()) return;
     final invoiceNavigator = Navigator.of(context);
     while (mounted) {
       final selection =
+          resume ??
           await showBlurredModalBottomSheet<InvoicePaymentSelection>(
             context: context,
             useRootNavigator: true,
@@ -3046,7 +3180,8 @@ class _InvoiceDetailSheetState extends ConsumerState<_InvoiceDetailSheet> {
             backgroundColor: Colors.transparent,
             builder: (_) => InvoicePaymentMethodSheet(invoiceId: item.id),
           );
-      if (!mounted || selection == null) return;
+      resume = null;
+      if (!mounted || !sameOwner() || selection == null) return;
       _invalidateInvoiceData();
       if (selection.method == 'manager') {
         widget.onPay();
@@ -3072,14 +3207,16 @@ class _InvoiceDetailSheetState extends ConsumerState<_InvoiceDetailSheet> {
               : null,
         ),
       );
-      if (!mounted) return;
+      if (!mounted || !sameOwner()) return;
       _invalidateInvoiceData();
       if (changed == true) {
         widget.onBonusApplied();
         invoiceNavigator.pop();
         return;
       }
-      if (!changeRequested) return;
+      if (!changeRequested || !sameOwner()) return;
+      if (!await _ensurePaymentOperatorsWorking()) return;
+      if (!mounted || !sameOwner()) return;
     }
   }
 
@@ -3339,7 +3476,7 @@ class _InvoiceDetailSheetState extends ConsumerState<_InvoiceDetailSheet> {
               ),
               const SizedBox(height: 12),
             ],
-            if (paymentSummary != null) ...[
+            if (paymentSummary != null && paymentSummary.isPartial) ...[
               ClientPaymentSummaryPanel(
                 summary: paymentSummary,
                 terminalRefund: const {

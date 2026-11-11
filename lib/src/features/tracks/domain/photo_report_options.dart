@@ -36,6 +36,12 @@ class PhotoReportSelection {
   final String reportType;
   final String? wish;
   final String expectedPriceUsd;
+  final String? loyaltyRewardType;
 
-  const PhotoReportSelection(this.reportType, this.wish, this.expectedPriceUsd);
+  const PhotoReportSelection(
+    this.reportType,
+    this.wish,
+    this.expectedPriceUsd, {
+    this.loyaltyRewardType,
+  });
 }

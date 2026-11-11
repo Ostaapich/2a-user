@@ -132,9 +132,108 @@ final invoicesListProvider = FutureProvider.family<List<InvoiceItem>, String>((
         .toList();
   } catch (e) {
     debugPrint('Error loading invoices: $e');
-    return [];
+    rethrow;
   }
 });
+
+typedef InvoiceDirectoryQuery = ({
+  String clientCode,
+  String search,
+  String? status,
+  int pages,
+});
+typedef InvoicePageQuery = ({
+  String clientCode,
+  String search,
+  String? status,
+  int page,
+});
+
+class InvoiceDirectoryPage {
+  final List<InvoiceItem> items;
+  final int total;
+  final bool hasMore;
+  const InvoiceDirectoryPage({
+    required this.items,
+    required this.total,
+    required this.hasMore,
+  });
+}
+
+Future<InvoiceDirectoryPage> fetchInvoiceDirectoryPage(
+  ApiClient api,
+  InvoicePageQuery query,
+) async {
+  const size = 50;
+  final response = await api.get(
+    '/invoices',
+    queryParameters: {
+      'clientCode': query.clientCode,
+      'skip': (query.page - 1) * size,
+      'take': size,
+      if (query.search.trim().isNotEmpty) 'search': query.search.trim(),
+      if (query.status != null) 'status': query.status,
+    },
+  );
+  if (response.statusCode != 200 || response.data is! Map) {
+    throw const FormatException('Invalid invoice directory response');
+  }
+  final body = response.data as Map;
+  if (body['data'] is! List) {
+    throw const FormatException('Missing invoice page');
+  }
+  final items = (body['data'] as List)
+      .map(
+        (value) =>
+            InvoiceItem.fromJson(Map<String, dynamic>.from(value as Map)),
+      )
+      .toList(growable: false);
+  final total = (body['total'] as num?)?.toInt() ?? items.length;
+  final hasMore = body['hasMore'] == true;
+  if (hasMore && items.isEmpty) {
+    throw const FormatException('Invoice pagination did not advance');
+  }
+  return InvoiceDirectoryPage(items: items, total: total, hasMore: hasMore);
+}
+
+final invoiceDirectoryPageProvider = FutureProvider.autoDispose
+    .family<InvoiceDirectoryPage, InvoicePageQuery>((ref, query) async {
+      if (ref.watch(demoModeProvider)) {
+        return const InvoiceDirectoryPage(items: [], total: 0, hasMore: false);
+      }
+      return fetchInvoiceDirectoryPage(ref.read(apiClientProvider), query);
+    });
+
+/// Each page has its own provider: adding a page retains the earlier pages,
+/// while search and status are always applied by the server across all history.
+final invoiceDirectoryProvider = FutureProvider.autoDispose
+    .family<InvoiceDirectoryPage, InvoiceDirectoryQuery>((ref, query) async {
+      final items = <String, InvoiceItem>{};
+      var result = const InvoiceDirectoryPage(
+        items: [],
+        total: 0,
+        hasMore: false,
+      );
+      for (var page = 1; page <= query.pages; page++) {
+        result = await ref.watch(
+          invoiceDirectoryPageProvider((
+            clientCode: query.clientCode,
+            search: query.search,
+            status: query.status,
+            page: page,
+          )).future,
+        );
+        for (final item in result.items) {
+          items[item.id] = item;
+        }
+        if (!result.hasMore) break;
+      }
+      return InvoiceDirectoryPage(
+        items: items.values.toList(growable: false),
+        total: result.total,
+        hasMore: result.hasMore,
+      );
+    });
 
 /// Провайдер для дайджеста счетов (последние 10, сортировка по updatedAt)
 final invoicesDigestProvider = FutureProvider.family<List<InvoiceItem>, String>(
@@ -191,7 +290,9 @@ Future<List<InvoiceItem>> fetchAllInvoicesForExport(
       debugPrint(
         'fetchAllInvoicesForExport: hit safetyLimit=$safetyLimit, stop',
       );
-      break;
+      throw const FormatException(
+        'Invoice export safety limit reached before completion',
+      );
     }
     try {
       final response = await apiClient.get(
@@ -202,22 +303,29 @@ Future<List<InvoiceItem>> fetchAllInvoicesForExport(
           'take': batchSize,
         },
       );
-      if (response.statusCode != 200 || response.data == null) break;
+      if (response.statusCode != 200 || response.data is! Map) {
+        throw const FormatException('Incomplete invoice export response');
+      }
 
       final data = response.data as Map<String, dynamic>;
-      final invoicesJson = data['data'] as List<dynamic>? ?? const [];
+      if (data['data'] is! List) {
+        throw const FormatException('Missing invoice export page');
+      }
+      final invoicesJson = data['data'] as List<dynamic>;
       final batch = invoicesJson
           .map((json) => InvoiceItem.fromJson(json as Map<String, dynamic>))
           .toList();
       all.addAll(batch);
 
       final hasMore = data['hasMore'] as bool? ?? (batch.length == batchSize);
-      if (!hasMore || batch.isEmpty) break;
+      if (!hasMore) break;
+      if (batch.isEmpty) {
+        throw const FormatException('Invoice export did not advance');
+      }
       skip += batchSize;
     } on DioException catch (e) {
       debugPrint('fetchAllInvoicesForExport error: $e');
-      // Возвращаем что собрали, даже если последний батч упал.
-      break;
+      rethrow;
     }
   }
   return all;

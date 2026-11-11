@@ -20,6 +20,25 @@ import AVFoundation
     }
 
     GeneratedPluginRegistrant.register(with: self)
+    if let registrar = self.registrar(forPlugin: "com.twoalogistic.user.notification_badge") {
+      let channel = FlutterMethodChannel(
+        name: "com.twoalogistic.user/notification_badge",
+        binaryMessenger: registrar.messenger()
+      )
+      channel.setMethodCallHandler { call, result in
+        guard call.method == "setCount",
+              let arguments = call.arguments as? [String: Any],
+              let count = arguments["count"] as? Int else {
+          result(FlutterMethodNotImplemented)
+          return
+        }
+        DispatchQueue.main.async {
+          UIApplication.shared.applicationIconBadgeNumber = max(0, count)
+          result(nil)
+        }
+      }
+    }
+
     if let registrar = self.registrar(forPlugin: "com.twoalogistic.user.video_playback") {
       let channel = FlutterMethodChannel(
         name: "com.twoalogistic.user/video_playback",

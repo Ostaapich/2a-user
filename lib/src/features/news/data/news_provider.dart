@@ -47,7 +47,7 @@ final newsListProvider = FutureProvider<List<NewsItem>>((ref) async {
     return [];
   } on DioException catch (e) {
     debugPrint('Error loading news: $e');
-    return [];
+    rethrow;
   }
 });
 
@@ -77,8 +77,8 @@ final newsItemProvider = FutureProvider.family<NewsItem?, String>((
         }
       }
     } on DioException catch (e) {
-      // 404 / 401 / 5xx — fallback на список ниже.
-      debugPrint('News fetchById fallback: $e');
+      if (e.response?.statusCode == 404) return null;
+      rethrow;
     }
   }
 

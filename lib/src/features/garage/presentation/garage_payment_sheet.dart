@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -111,13 +112,28 @@ class _GaragePaymentSheetState extends ConsumerState<GaragePaymentSheet> {
   }
 
   Future<void> _pickReceipt() async {
-    final receipt = await pickPaymentReceipt(context);
-    if (!mounted || receipt == null) return;
-    setState(() {
-      _receiptBytes = receipt.bytes;
-      _receiptName = receipt.fileName;
-      _receiptMime = receipt.mimeType;
-    });
+    if (_uploading) return;
+    setState(() => _uploading = true);
+    try {
+      final receipt = await pickPaymentReceipt(context);
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      if (receipt == null) return;
+      setState(() {
+        _receiptBytes = receipt.bytes;
+        _receiptName = receipt.fileName;
+        _receiptMime = receipt.mimeType;
+      });
+      await _upload();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      AppToast.show(
+        context,
+        tr(context, ru: 'Не удалось выбрать чек', zh: '无法选择付款凭证'),
+        isError: true,
+      );
+    }
   }
 
   Future<void> _upload() async {
@@ -126,7 +142,7 @@ class _GaragePaymentSheetState extends ConsumerState<GaragePaymentSheet> {
     if (payment == null || bytes == null || _uploading) return;
     setState(() => _uploading = true);
     try {
-      await ref
+      final upload = await ref
           .read(garageRepositoryProvider)
           .uploadPaymentReceipt(
             paymentId: payment.paymentId,
@@ -135,13 +151,27 @@ class _GaragePaymentSheetState extends ConsumerState<GaragePaymentSheet> {
             mimeType: _receiptMime ?? 'application/octet-stream',
           );
       if (!mounted) return;
+      if (upload.invoiceStatus != 'payment_review' ||
+          upload.paymentId != payment.paymentId) {
+        throw StateError('Receipt review was not confirmed');
+      }
       Navigator.of(context).pop(true);
-    } catch (_) {
+    } catch (error) {
       if (!mounted) return;
       setState(() => _uploading = false);
       AppToast.show(
         context,
-        tr(context, ru: 'Не удалось отправить чек', zh: '无法提交付款凭证'),
+        error is DioException && error.response?.statusCode == 409
+            ? tr(
+                context,
+                ru: 'Платёж изменился. Обновите данные и проверьте статус чека.',
+                zh: '付款状态已变更，请刷新并查看凭证状态。',
+              )
+            : tr(
+                context,
+                ru: 'Не удалось отправить чек. Повторите отправку.',
+                zh: '无法提交付款凭证，请重试。',
+              ),
         isError: true,
       );
     }
@@ -255,6 +285,7 @@ class _GaragePaymentSheetState extends ConsumerState<GaragePaymentSheet> {
         GarageCard(
           child: Column(
             children: [
+              const PaymentRecipientWarning(),
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -350,13 +381,12 @@ class _GaragePaymentSheetState extends ConsumerState<GaragePaymentSheet> {
                 ),
               ),
               const SizedBox(height: 12),
-              GarageSecondaryButton(
-                label: _receiptBytes == null
-                    ? tr(context, ru: 'Приложить чек', zh: '上传凭证')
-                    : tr(context, ru: 'Заменить чек', zh: '更换凭证'),
-                icon: Icons.attach_file_rounded,
-                onPressed: _uploading ? null : _pickReceipt,
-              ),
+              if (_receiptBytes != null)
+                GarageSecondaryButton(
+                  label: tr(context, ru: 'Заменить чек', zh: '更换凭证'),
+                  icon: Icons.attach_file_rounded,
+                  onPressed: _uploading ? null : _pickReceipt,
+                ),
               if (_receiptBytes != null) ...[
                 const SizedBox(height: 10),
                 Container(
@@ -390,13 +420,13 @@ class _GaragePaymentSheetState extends ConsumerState<GaragePaymentSheet> {
               ],
               const SizedBox(height: 12),
               GaragePrimaryButton(
-                label: tr(
-                  context,
-                  ru: 'Я оплатил — отправить чек',
-                  zh: '我已付款 — 提交凭证',
-                ),
+                label: _receiptBytes == null
+                    ? tr(context, ru: 'Приложить чек', zh: '附加付款凭证')
+                    : tr(context, ru: 'Повторить отправку', zh: '重新发送'),
                 icon: Icons.check_circle_outline_rounded,
-                onPressed: _receiptBytes == null ? null : _upload,
+                onPressed: _uploading
+                    ? null
+                    : (_receiptBytes == null ? _pickReceipt : _upload),
                 loading: _uploading,
               ),
             ],

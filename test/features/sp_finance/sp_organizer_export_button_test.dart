@@ -169,6 +169,28 @@ void _expectSharedHeaderActionStyle(WidgetTester tester, Finder finder) {
 }
 
 void main() {
+  testWidgets('Chinese SP add form localizes inputs, imports and validation', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      size: const Size(390, 1000),
+      locale: const Locale('zh'),
+    );
+    await tester.tap(find.text('Добавить товар').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(find.text('添加商品'), findsWidgets);
+    expect(find.text('参与者姓名 *'), findsOneWidget);
+    expect(find.text('新建'), findsOneWidget);
+    expect(find.text('导入商品'), findsOneWidget);
+    final save = find.widgetWithText(FilledButton, '添加商品');
+    await tester.tap(save);
+    await tester.pump();
+    expect(find.text('请填写客户和商品'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('export action fits purchase header at 320 px', (tester) async {
     await _pump(
       tester,
@@ -237,7 +259,14 @@ void main() {
     expect(find.text('Параметры расчёта'), findsNothing);
     expect(find.text('Логистика Partner Cargo'), findsNothing);
     expect(find.text('Добавить товар'), findsOneWidget);
+    expect(find.text('Закрыть приём'), findsNothing);
+    await tester.tap(find.text('Управление СП'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Закрыть приём'), findsOneWidget);
+    await tester.tap(find.text('Управление СП'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     await tester.tap(find.text('Участники'));
     await tester.pump();
@@ -253,6 +282,7 @@ void main() {
       ),
     );
 
+    await Scrollable.ensureVisible(tester.element(find.text('Настройки')));
     await tester.tap(find.text('Настройки'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
@@ -299,7 +329,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 700));
 
     expect(find.byKey(const ValueKey('add-item-modal')), findsOneWidget);
-    expect(find.text('Источник данных'), findsOneWidget);
+    expect(find.byKey(const ValueKey('track-import-entry')), findsNothing);
+    await tester.tap(find.text('Импорт товара'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
     expect(find.byKey(const ValueKey('track-import-entry')), findsOneWidget);
     expect(
       find.byKey(const ValueKey('purchase-blank-import-entry')),
@@ -315,7 +348,12 @@ void main() {
     await tester.scrollUntilVisible(
       find.byKey(const ValueKey('garage-import-entry')),
       160,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey('add-item-form-list')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     await tester.pump();
     expect(find.byKey(const ValueKey('garage-import-entry')), findsOneWidget);
@@ -334,6 +372,10 @@ void main() {
       observer: observer,
     );
     await tester.tap(find.text('Добавить товар').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.tap(find.text('Импорт товара'));
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     final cases = <(Key, String)>[
       (const ValueKey('track-import-entry'), 'Добавить из трека'),
@@ -436,6 +478,15 @@ void main() {
     );
     await tester.pump();
     expect(find.text('Участник теста'), findsOneWidget);
+    await tester.tap(find.byTooltip('Очистить поиск'));
+    await tester.pump();
+    final participantSearch = tester.widget<TextField>(
+      find.descendant(
+        of: find.byKey(const ValueKey('add-item-customer-search')),
+        matching: find.byType(TextField),
+      ),
+    );
+    expect(participantSearch.controller?.text, '');
     await tester.tap(find.byKey(const ValueKey('add-item-customer-result-31')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));

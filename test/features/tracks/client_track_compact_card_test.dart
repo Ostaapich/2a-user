@@ -1,8 +1,22 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twoalogisticcabineuser/src/features/tracks/presentation/widgets/client_track_compact_card.dart';
 
 void main() {
+  setUpAll(() async {
+    await (FontLoader('Gilroy')
+          ..addFont(rootBundle.load('assets/fonts/gilroy/Gilroy-Regular.ttf'))
+          ..addFont(rootBundle.load('assets/fonts/gilroy/Gilroy-Bold.ttf')))
+        .load();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    await (FontLoader('CupertinoIcons')..addFont(
+          rootBundle.load('packages/cupertino_icons/assets/CupertinoIcons.ttf'),
+        ))
+        .load();
+  });
   testWidgets('card keeps selection independent from opening details', (
     tester,
   ) async {
@@ -242,21 +256,85 @@ void main() {
       tester
           .getSize(find.byKey(const ValueKey('client-track-action-panel')))
           .height,
-      52,
+      greaterThanOrEqualTo(64),
     );
     expect(
       tester
           .getSize(find.byKey(const ValueKey('client-track-action-panel')))
           .width,
-      tester
-          .getSize(find.byKey(const ValueKey('client-track-card-YT123456789')))
-          .width,
+      lessThanOrEqualTo(
+        tester
+            .getSize(
+              find.byKey(const ValueKey('client-track-card-YT123456789')),
+            )
+            .width,
+      ),
     );
     expect(find.text('Заполнено'), findsNothing);
     expect(find.text('Готово'), findsNothing);
     expect(find.text('Ждёт ответа'), findsNothing);
     expect(find.text('Оформлен'), findsNothing);
   });
+
+  testWidgets(
+    'all six actions remain visible and tappable at320px with large text',
+    (tester) async {
+      tester.view.physicalSize = const Size(320, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final labels = [
+        'Вопросы',
+        'Перенести',
+        'Заметка',
+        'Фотоотчёт',
+        'Возврат',
+        'Удалить',
+      ];
+      final taps = <String>[];
+      await tester.pumpWidget(
+        _testApp(
+          textScale: 1.6,
+          child: ClientTrackCompactCard(
+            trackNumber: 'TEST',
+            status: 'На складе',
+            statusColor: Colors.green,
+            productName: 'Товар',
+            selectable: false,
+            selected: false,
+            onToggleSelection: null,
+            onCopyTrack: () {},
+            onOpenDetails: (_) {},
+            indicators: const [],
+            actions: [
+              for (final label in labels)
+                ClientTrackQuickAction(
+                  icon: Icons.help_outline,
+                  label: label,
+                  onTap: () => taps.add(label),
+                ),
+            ],
+          ),
+        ),
+      );
+      final panel = tester.getRect(
+        find.byKey(const ValueKey('client-track-action-panel')),
+      );
+      for (final label in labels) {
+        final action = find.byKey(ValueKey('client-track-action-$label'));
+        final rect = tester.getRect(action);
+        expect(rect.left, greaterThanOrEqualTo(panel.left));
+        expect(rect.right, lessThanOrEqualTo(panel.right));
+        expect(rect.top, greaterThanOrEqualTo(panel.top));
+        expect(rect.bottom, lessThanOrEqualTo(panel.bottom));
+        expect(rect.width, greaterThanOrEqualTo(44));
+        expect(rect.height, greaterThanOrEqualTo(44));
+        await tester.tap(action);
+      }
+      expect(taps, labels);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('compact card visual baseline matches the client app style', (
     tester,
@@ -409,7 +487,10 @@ Widget _testApp({
   Color backgroundColor = Colors.white,
 }) {
   return MaterialApp(
-    theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: seedColor)),
+    theme: ThemeData(
+      fontFamily: 'Gilroy',
+      colorScheme: ColorScheme.fromSeed(seedColor: seedColor),
+    ),
     home: MediaQuery(
       data: MediaQueryData(textScaler: TextScaler.linear(textScale)),
       child: Scaffold(

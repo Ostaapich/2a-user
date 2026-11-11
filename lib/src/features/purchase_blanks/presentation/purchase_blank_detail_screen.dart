@@ -1,3 +1,4 @@
+import '../../../core/ui/unsaved_changes_guard.dart';
 import 'package:twoalogisticcabineuser/src/features/training/presentation/training_target.dart';
 import 'dart:typed_data';
 
@@ -12,6 +13,7 @@ import '../../../core/ui/app_colors.dart';
 import '../../../core/ui/app_layout.dart';
 import '../../../core/ui/sheet_handle.dart';
 import '../data/purchase_blank_model.dart';
+import '../data/blank_item_save_session.dart';
 import '../data/purchase_blanks_provider.dart';
 import 'purchase_blank_ui.dart';
 import 'widgets/blank_item_card.dart';
@@ -31,6 +33,56 @@ class _PurchaseBlankDetailScreenState
     extends ConsumerState<PurchaseBlankDetailScreen> {
   bool _showAddForm = false;
   int? _editingItemId;
+  final _addFormKey = GlobalKey();
+  BlankItemSaveSession? _addSaveSession;
+  final _editSaveSessions = <int, BlankItemSaveSession>{};
+
+  Future<void> _openAddForm() async {
+    if ((_editingItemId != null || _showAddForm) &&
+        !await confirmDiscardChanges(context)) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _showAddForm = true;
+      _editingItemId = null;
+      _addSaveSession = BlankItemSaveSession();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final formContext = _addFormKey.currentContext;
+      if (formContext != null) {
+        Scrollable.ensureVisible(
+          formContext,
+          duration: const Duration(milliseconds: 250),
+          alignment: 0.08,
+        );
+      }
+    });
+  }
+
+  Future<void> _openEditForm(int itemId) async {
+    if ((_editingItemId != null || _showAddForm) &&
+        !await confirmDiscardChanges(context)) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _showAddForm = false;
+      _editingItemId = itemId;
+    });
+  }
+
+  void _cancelAddForm() {
+    final savedItemId = _addSaveSession?.savedItemId;
+    setState(() {
+      _showAddForm = false;
+      _addSaveSession = null;
+    });
+    if (savedItemId != null) {
+      ref.invalidate(purchaseBlankDetailProvider(widget.blankId));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -98,6 +150,7 @@ class _PurchaseBlankDetailScreenState
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: BlankItemForm(
+                  key: ValueKey('blank-item-${item.id}'),
                   existingItem: item,
                   onSave:
                       ({
@@ -121,7 +174,11 @@ class _PurchaseBlankDetailScreenState
                           newPhotoNames: newPhotoNames,
                         );
                       },
-                  onCancel: () => setState(() => _editingItemId = null),
+                  onCancel: () {
+                    _editSaveSessions.remove(item.id);
+                    setState(() => _editingItemId = null);
+                    ref.invalidate(purchaseBlankDetailProvider(widget.blankId));
+                  },
                 ),
               );
             }
@@ -130,7 +187,7 @@ class _PurchaseBlankDetailScreenState
               child: BlankItemCard(
                 item: item,
                 isEditable: isEditable,
-                onEdit: () => setState(() => _editingItemId = item.id),
+                onEdit: () => _openEditForm(item.id),
                 onDelete: () => _deleteItem(blank.id, item.id),
               ),
             );
@@ -139,6 +196,7 @@ class _PurchaseBlankDetailScreenState
           // ── Форма добавления товара ──────────────────
           if (_showAddForm && isEditable) ...[
             BlankItemForm(
+              key: _addFormKey,
               onSave:
                   ({
                     required String productName,
@@ -160,7 +218,7 @@ class _PurchaseBlankDetailScreenState
                       newPhotoNames: newPhotoNames,
                     );
                   },
-              onCancel: () => setState(() => _showAddForm = false),
+              onCancel: _cancelAddForm,
             ),
             const SizedBox(height: 16),
           ],
@@ -549,10 +607,7 @@ class _PurchaseBlankDetailScreenState
                 color: context.brandPrimary,
                 borderRadius: BorderRadius.circular(16),
                 child: InkWell(
-                  onTap: () => setState(() {
-                    _showAddForm = true;
-                    _editingItemId = null;
-                  }),
+                  onTap: _openAddForm,
                   borderRadius: BorderRadius.circular(16),
                   child: const SizedBox(
                     width: 44,
@@ -624,7 +679,7 @@ class _PurchaseBlankDetailScreenState
             TrainingTarget(
               id: 'purchase.item.add.empty',
               child: IconButton.filled(
-                onPressed: () => setState(() => _showAddForm = true),
+                onPressed: _openAddForm,
                 style: IconButton.styleFrom(
                   backgroundColor: context.brandPrimary,
                   foregroundColor: Colors.white,
@@ -798,29 +853,41 @@ class _PurchaseBlankDetailScreenState
     List<String>? newPhotoNames,
   }) async {
     final notifier = ref.read(purchaseBlanksProvider.notifier);
-    final item = await notifier.addItem(
-      blankId,
-      productName: productName,
-      productUrl: productUrl,
-      characteristics: characteristics,
-      quantity: quantity,
-      unitPrice: unitPrice,
+    final session = _addSaveSession ??= BlankItemSaveSession();
+    await session.save(
+      saveItem: (savedId) async {
+        final item = savedId == null
+            ? await notifier.addItem(
+                blankId,
+                productName: productName,
+                productUrl: productUrl,
+                characteristics: characteristics,
+                quantity: quantity,
+                unitPrice: unitPrice,
+              )
+            : await notifier.updateItem(
+                blankId,
+                savedId,
+                productName: productName,
+                productUrl: productUrl,
+                characteristics: characteristics,
+                quantity: quantity,
+                unitPrice: unitPrice,
+              );
+        return item?.id;
+      },
+      photos: newPhotos ?? const [],
+      uploadPhoto: (itemId, bytes, index) => notifier.uploadItemPhoto(
+        blankId,
+        itemId,
+        bytes.toList(),
+        newPhotoNames?[index] ?? 'photo_$index.jpg',
+      ),
     );
-
-    if (item != null && newPhotos != null) {
-      // Загружаем фото по одному
-      for (int i = 0; i < newPhotos.length; i++) {
-        await notifier.uploadItemPhoto(
-          blankId,
-          item.id,
-          newPhotos[i].toList(),
-          newPhotoNames?[i] ?? 'photo_$i.jpg',
-        );
-      }
-    }
 
     if (mounted) {
       setState(() => _showAddForm = false);
+      _addSaveSession = null;
       ref.invalidate(purchaseBlankDetailProvider(widget.blankId));
     }
   }
@@ -837,29 +904,32 @@ class _PurchaseBlankDetailScreenState
     List<String>? newPhotoNames,
   }) async {
     final notifier = ref.read(purchaseBlanksProvider.notifier);
-    await notifier.updateItem(
-      blankId,
+    final session = _editSaveSessions.putIfAbsent(
       itemId,
-      productName: productName,
-      productUrl: productUrl,
-      characteristics: characteristics,
-      quantity: quantity,
-      unitPrice: unitPrice,
+      () => BlankItemSaveSession(savedItemId: itemId),
     );
-
-    if (newPhotos != null) {
-      for (int i = 0; i < newPhotos.length; i++) {
-        await notifier.uploadItemPhoto(
-          blankId,
-          itemId,
-          newPhotos[i].toList(),
-          newPhotoNames?[i] ?? 'photo_$i.jpg',
-        );
-      }
-    }
+    await session.save(
+      saveItem: (_) async => (await notifier.updateItem(
+        blankId,
+        itemId,
+        productName: productName,
+        productUrl: productUrl,
+        characteristics: characteristics,
+        quantity: quantity,
+        unitPrice: unitPrice,
+      ))?.id,
+      photos: newPhotos ?? const [],
+      uploadPhoto: (savedId, bytes, index) => notifier.uploadItemPhoto(
+        blankId,
+        savedId,
+        bytes.toList(),
+        newPhotoNames?[index] ?? 'photo_$index.jpg',
+      ),
+    );
 
     if (mounted) {
       setState(() => _editingItemId = null);
+      _editSaveSessions.remove(itemId);
       ref.invalidate(purchaseBlankDetailProvider(widget.blankId));
     }
   }

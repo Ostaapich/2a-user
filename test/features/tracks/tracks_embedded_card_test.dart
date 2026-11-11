@@ -1,3 +1,5 @@
+import '../../helpers/keyboard_acceptance.dart';
+import 'package:twoalogisticcabineuser/src/core/ui/app_keyboard_dismiss.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,8 +11,9 @@ import 'package:twoalogisticcabineuser/src/features/tracks/presentation/tracks_s
 
 Future<void> _pumpEmbeddedAssembly(
   WidgetTester tester,
-  TrackAssembly assembly,
-) async {
+  TrackAssembly assembly, {
+  TargetPlatform platform = TargetPlatform.android,
+}) async {
   final now = DateTime(2026, 9, 1);
   final track = TrackItem(
     code: 'YT-ASSEMBLY-42',
@@ -32,6 +35,8 @@ Future<void> _pumpEmbeddedAssembly(
         assemblyStatusesProvider.overrideWith((ref) async => const []),
       ],
       child: MaterialApp(
+        theme: ThemeData(fontFamily: 'Gilroy', platform: platform),
+        builder: (context, child) => AppKeyboardDismissRegion(child: child!),
         home: Scaffold(
           body: TracksScreen.embedded(tracks: [track], asAssembly: true),
         ),
@@ -42,6 +47,7 @@ Future<void> _pumpEmbeddedAssembly(
 }
 
 void main() {
+  setUpAll(loadKeyboardAcceptanceFonts);
   testWidgets('photo detail survives removal of its source track card', (
     tester,
   ) async {
@@ -235,4 +241,48 @@ void main() {
     );
     expect(selfPickupInkWell.onTap, isNotNull);
   });
+
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets(
+      'assembly delivery every input and comment aboveIME ${platform.name}',
+      (tester) async {
+        await initializeDateFormatting('ru');
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(390, 844);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetViewInsets);
+        const assembly = TrackAssembly(
+          id: 43,
+          number: 'ASM-KEYBOARD',
+          status: 'ready_for_pickup',
+          deliveryMethod: 'transport_company',
+          recipientName: 'Клиент',
+          recipientPhone: '+79991234567',
+          recipientCity: 'Москва',
+          transportCompanyName: 'СДЭК',
+          trackCount: 1,
+        );
+        await _pumpEmbeddedAssembly(tester, assembly, platform: platform);
+        await tester.tap(
+          find.byKey(const ValueKey('client-track-indicator-2')),
+        );
+        await tester.pumpAndSettle();
+        expect(await exerciseCurrentRouteEditors(tester), 4);
+        expect(find.text('Сохранить доставку'), findsOneWidget);
+        Navigator.of(tester.element(find.byType(EditableText).first)).pop();
+        await tester.pumpAndSettle();
+        final note = find.byKey(const ValueKey('client-track-action-Заметка'));
+        await tester.ensureVisible(note);
+        await tester.tap(note);
+        await tester.pumpAndSettle();
+        expect(await exerciseCurrentRouteEditors(tester), 1);
+        final cancel = find.text('Отмена');
+        await tester.ensureVisible(cancel);
+        await tester.tap(cancel);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 }

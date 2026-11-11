@@ -10,6 +10,7 @@ import '../application/training_tour_provider.dart';
 import '../application/assembly_training_provider.dart';
 import 'assembly_practice_steps.dart';
 import 'training_target.dart';
+import 'training_modal_ownership.dart';
 import 'training_tour_overlay.dart';
 import 'training_tour_steps.dart';
 
@@ -162,6 +163,7 @@ class _ActiveTrainingTour extends ConsumerWidget {
       builder: (context, _) => TrainingTourOverlay(
         controller: controller,
         registry: registry,
+        modalOwnership: ref.read(trainingModalOwnershipProvider),
         step: step,
         guidedPractice: practice,
         advanceRequested:

@@ -1,3 +1,4 @@
+import '../../../core/services/analytics_service.dart';
 import '../../home/data/home_counts_provider.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -206,13 +207,15 @@ class AuthNotifier extends Notifier<AuthState> {
           );
         }
       });
+      ref.onDispose(() => timeoutTimer?.cancel());
       await Future.any([_doLoadAuthState(), timeout.future]);
     } catch (e) {
       debugPrint('❌ _loadAuthState timeout/error: $e');
-      if (!_initialLoadDone) {
+      if (ref.mounted && !_initialLoadDone) {
         _initialLoadDone = true;
         state = const AuthState(isLoggedIn: false, isLoading: false);
         PushNotificationService.clearActiveClient();
+        AnalyticsService.clearBrowserSession();
       }
     } finally {
       timeoutTimer?.cancel();
@@ -222,6 +225,7 @@ class AuthNotifier extends Notifier<AuthState> {
   Future<void> _doLoadAuthState() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (!ref.mounted) return;
       final isLoggedIn = prefs.getBool(_kIsLoggedInKey) ?? false;
       final userEmail = prefs.getString(_kUserEmailKey);
       final userDomain = prefs.getString(_kUserDomainKey);
@@ -234,6 +238,7 @@ class AuthNotifier extends Notifier<AuthState> {
       // Проверяем есть ли токен в ApiClient (он сам знает откуда читать: localStorage на web, SecureStorage на мобильных)
       if (isLoggedIn) {
         final hasToken = await _apiClient.hasTokenAsync();
+        if (!ref.mounted) return;
         debugPrint('🔍 hasToken from ApiClient: $hasToken');
 
         if (!hasToken) {
@@ -249,10 +254,11 @@ class AuthNotifier extends Notifier<AuthState> {
           debugPrint(
             '🔐 Token not found — showing login screen (not forcing logout)',
           );
-          if (!_initialLoadDone) {
+          if (ref.mounted && !_initialLoadDone) {
             _initialLoadDone = true;
             state = const AuthState(isLoggedIn: false, isLoading: false);
             PushNotificationService.clearActiveClient();
+            AnalyticsService.clearBrowserSession();
           }
           return;
         }
@@ -293,6 +299,7 @@ class AuthNotifier extends Notifier<AuthState> {
         _setLogUserContextFromData(clientId: clientId, clientData: clientData);
       } else {
         PushNotificationService.clearActiveClient();
+        AnalyticsService.clearBrowserSession();
         ClientLogService.instance.clearUserContext();
       }
 
@@ -312,10 +319,11 @@ class AuthNotifier extends Notifier<AuthState> {
       // Если что-то пошло не так при загрузке состояния — не зависаем на сплэше,
       // просто показываем экран входа.
       debugPrint('❌ Error loading auth state: $e\n$stackTrace');
-      if (!_initialLoadDone) {
+      if (ref.mounted && !_initialLoadDone) {
         _initialLoadDone = true;
         state = const AuthState(isLoggedIn: false, isLoading: false);
         PushNotificationService.clearActiveClient();
+        AnalyticsService.clearBrowserSession();
       }
     }
   }
@@ -348,182 +356,196 @@ class AuthNotifier extends Notifier<AuthState> {
     required String password,
     Future<void> Function(Map<String, dynamic> userData)? beforeComplete,
   }) async {
-    _initialLoadDone =
-        true; // Предотвращаем перезапись state от _loadAuthState()
-    state = state.copyWith(
-      isLoading: true,
-      clearError: true,
-      clearLoginVerificationChallenge: true,
-    );
+    return AnalyticsService.traceOperation(
+      WorkflowAction.login,
+      () async {
+        _initialLoadDone =
+            true; // Предотвращаем перезапись state от _loadAuthState()
+        state = state.copyWith(
+          isLoading: true,
+          clearError: true,
+          clearLoginVerificationChallenge: true,
+        );
 
-    try {
-      final response = await _apiClient.post(
-        '/login',
-        data: {
-          'email': email,
-          'password': password,
-          'type': 'client', // Важно! Для клиентов type = 'client'
-          // PU-C1: передаём domain, чтобы backend нашёл агента и не
-          // подхватил клиента с тем же email из другого тенанта.
-          'domain': domain,
-        },
-      );
+        try {
+          final response = await _apiClient.post(
+            '/login',
+            data: {
+              'email': email,
+              'password': password,
+              'type': 'client', // Важно! Для клиентов type = 'client'
+              // PU-C1: передаём domain, чтобы backend нашёл агента и не
+              // подхватил клиента с тем же email из другого тенанта.
+              'domain': domain,
+            },
+          );
 
-      if (response.statusCode == 200 && response.data != null) {
-        final data = response.data as Map<String, dynamic>;
-        final token = data['token'] as String?;
-        final userData = data['user'] as Map<String, dynamic>?;
+          if (response.statusCode == 200 && response.data != null) {
+            final data = response.data as Map<String, dynamic>;
+            final token = data['token'] as String?;
+            final userData = data['user'] as Map<String, dynamic>?;
 
-        if (token == null || userData == null) {
+            if (token == null || userData == null) {
+              state = state.copyWith(
+                isLoading: false,
+                error: 'Некорректный ответ сервера',
+              );
+              return false;
+            }
+
+            // Сохраняем токен в ApiClient (он сам выберет где хранить: localStorage на web, SecureStorage на мобильных)
+            await _apiClient.setToken(token);
+
+            // Извлекаем данные клиента
+            final clientId =
+                userData['id'] as int? ?? userData['clientId'] as int?;
+            await _prepareClientIdentity(clientId);
+            final clientName =
+                userData['fullName'] as String? ??
+                userData['name'] as String? ??
+                email;
+            final agentData = userData['agent'] as Map<String, dynamic>?;
+            final clientDomain = agentData?['domain'] as String? ?? domain;
+
+            // Сохраняем в SharedPreferences (без токена - он в secure storage)
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setBool(_kIsLoggedInKey, true);
+            await prefs.setString(_kUserEmailKey, email);
+            await prefs.setString(_kUserDomainKey, clientDomain);
+            if (clientId != null) {
+              await prefs.setInt(_kClientIdKey, clientId);
+            }
+            await prefs.setString(_kClientNameKey, clientName);
+            await prefs.setString(_kClientDataKey, jsonEncode(userData));
+            unawaited(cacheClientProfileData(userData));
+
+            if (beforeComplete != null) {
+              try {
+                await beforeComplete(userData);
+              } catch (e) {
+                debugPrint('⚠️ Password login beforeComplete hook failed: $e');
+              }
+            }
+
+            // Сбрасываем только обучение, не принятие правил.
+            final showcaseService = ref.read(showcaseServiceProvider);
+            await showcaseService.resetTutorials();
+
+            // Обновляем состояние ПЕРЕД invalidate чтобы избежать циклических зависимостей
+            state = AuthState(
+              isLoggedIn: true,
+              userEmail: email,
+              userDomain: clientDomain,
+              isLoading: false,
+              clientId: clientId,
+              clientName: clientName,
+              clientData: userData,
+            );
+            PushNotificationService.setActiveClient(clientId);
+            _setLogUserContextFromData(
+              clientId: clientId,
+              clientData: userData,
+            );
+
+            // Invalidate все провайдеры данных чтобы новый пользователь не видел данные предыдущего
+            Future.microtask(() {
+              _invalidateAllProviders();
+              for (final page in ShowcasePage.values) {
+                ref.invalidate(showcaseProvider(page));
+              }
+              for (final block in ShowcaseBlock.values) {
+                ref.invalidate(showcaseBlockProvider(block));
+              }
+            });
+
+            // Регистрируем устройство для push-уведомлений
+            unawaited(_registerForPush(clientDomain));
+
+            return true;
+          } else {
+            state = state.copyWith(
+              isLoading: false,
+              error: 'Неверный email или пароль',
+            );
+            return false;
+          }
+        } on DioException catch (e) {
+          String errorMessage;
+
+          final responseData = e.response?.data;
+          final responseMap = responseData is Map<String, dynamic>
+              ? responseData
+              : responseData is Map
+              ? Map<String, dynamic>.from(responseData)
+              : null;
+          final responseCode = responseMap?['code'] as String?;
+
+          // Специфичные ошибки авторизации
+          if (e.response?.statusCode == 423 &&
+              responseCode == 'LOGIN_VERIFICATION_REQUIRED') {
+            errorMessage =
+                responseMap?['error'] as String? ??
+                'Слишком много неверных попыток. Подтвердите вход звонком.';
+            state = state.copyWith(
+              isLoading: false,
+              error: errorMessage,
+              loginVerificationChallenge: LoginVerificationChallenge(
+                login: email,
+                domain: domain,
+                message: errorMessage,
+                maskedPhone: responseMap?['maskedPhone'] as String?,
+                lockedUntil: DateTime.tryParse(
+                  responseMap?['lockedUntil'] as String? ?? '',
+                ),
+                remainingSeconds: responseMap?['remainingSeconds'] is int
+                    ? responseMap!['remainingSeconds'] as int
+                    : null,
+                attemptsLimit: responseMap?['attemptsLimit'] is int
+                    ? responseMap!['attemptsLimit'] as int
+                    : null,
+              ),
+            );
+            return false;
+          } else if (e.response?.statusCode == 401 ||
+              e.response?.statusCode == 403) {
+            errorMessage = 'Неверный email или пароль';
+          } else if (e.response?.statusCode == 404) {
+            errorMessage = 'Пользователь не найден. Проверьте данные для входа';
+          } else {
+            // Используем ErrorUtils для остальных ошибок
+            final errorInfo = ErrorUtils.getErrorInfo(e);
+            errorMessage = errorInfo.message;
+          }
+
+          debugPrint('Login error: $e');
+          debugPrint('Error message shown to user: $errorMessage');
+
           state = state.copyWith(
             isLoading: false,
-            error: 'Некорректный ответ сервера',
+            error: errorMessage,
+            clearLoginVerificationChallenge: true,
+          );
+          return false;
+        } catch (e, stackTrace) {
+          debugPrint('Login error: $e');
+
+          await ClientLogService.instance.captureNonFatal(
+            'Неожиданная ошибка входа',
+            error: e,
+            stackTrace: stackTrace,
+            data: {'domain': domain},
+          );
+
+          state = state.copyWith(
+            isLoading: false,
+            error: 'Произошла ошибка: $e',
           );
           return false;
         }
-
-        // Сохраняем токен в ApiClient (он сам выберет где хранить: localStorage на web, SecureStorage на мобильных)
-        await _apiClient.setToken(token);
-
-        // Извлекаем данные клиента
-        final clientId = userData['id'] as int? ?? userData['clientId'] as int?;
-        await _prepareClientIdentity(clientId);
-        final clientName =
-            userData['fullName'] as String? ??
-            userData['name'] as String? ??
-            email;
-        final agentData = userData['agent'] as Map<String, dynamic>?;
-        final clientDomain = agentData?['domain'] as String? ?? domain;
-
-        // Сохраняем в SharedPreferences (без токена - он в secure storage)
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool(_kIsLoggedInKey, true);
-        await prefs.setString(_kUserEmailKey, email);
-        await prefs.setString(_kUserDomainKey, clientDomain);
-        if (clientId != null) {
-          await prefs.setInt(_kClientIdKey, clientId);
-        }
-        await prefs.setString(_kClientNameKey, clientName);
-        await prefs.setString(_kClientDataKey, jsonEncode(userData));
-        unawaited(cacheClientProfileData(userData));
-
-        if (beforeComplete != null) {
-          try {
-            await beforeComplete(userData);
-          } catch (e) {
-            debugPrint('⚠️ Password login beforeComplete hook failed: $e');
-          }
-        }
-
-        // Сбрасываем только обучение, не принятие правил.
-        final showcaseService = ref.read(showcaseServiceProvider);
-        await showcaseService.resetTutorials();
-
-        // Обновляем состояние ПЕРЕД invalidate чтобы избежать циклических зависимостей
-        state = AuthState(
-          isLoggedIn: true,
-          userEmail: email,
-          userDomain: clientDomain,
-          isLoading: false,
-          clientId: clientId,
-          clientName: clientName,
-          clientData: userData,
-        );
-        PushNotificationService.setActiveClient(clientId);
-        _setLogUserContextFromData(clientId: clientId, clientData: userData);
-
-        // Invalidate все провайдеры данных чтобы новый пользователь не видел данные предыдущего
-        Future.microtask(() {
-          _invalidateAllProviders();
-          for (final page in ShowcasePage.values) {
-            ref.invalidate(showcaseProvider(page));
-          }
-          for (final block in ShowcaseBlock.values) {
-            ref.invalidate(showcaseBlockProvider(block));
-          }
-        });
-
-        // Регистрируем устройство для push-уведомлений
-        unawaited(_registerForPush(clientDomain));
-
-        return true;
-      } else {
-        state = state.copyWith(
-          isLoading: false,
-          error: 'Неверный email или пароль',
-        );
-        return false;
-      }
-    } on DioException catch (e) {
-      String errorMessage;
-
-      final responseData = e.response?.data;
-      final responseMap = responseData is Map<String, dynamic>
-          ? responseData
-          : responseData is Map
-          ? Map<String, dynamic>.from(responseData)
-          : null;
-      final responseCode = responseMap?['code'] as String?;
-
-      // Специфичные ошибки авторизации
-      if (e.response?.statusCode == 423 &&
-          responseCode == 'LOGIN_VERIFICATION_REQUIRED') {
-        errorMessage =
-            responseMap?['error'] as String? ??
-            'Слишком много неверных попыток. Подтвердите вход звонком.';
-        state = state.copyWith(
-          isLoading: false,
-          error: errorMessage,
-          loginVerificationChallenge: LoginVerificationChallenge(
-            login: email,
-            domain: domain,
-            message: errorMessage,
-            maskedPhone: responseMap?['maskedPhone'] as String?,
-            lockedUntil: DateTime.tryParse(
-              responseMap?['lockedUntil'] as String? ?? '',
-            ),
-            remainingSeconds: responseMap?['remainingSeconds'] is int
-                ? responseMap!['remainingSeconds'] as int
-                : null,
-            attemptsLimit: responseMap?['attemptsLimit'] is int
-                ? responseMap!['attemptsLimit'] as int
-                : null,
-          ),
-        );
-        return false;
-      } else if (e.response?.statusCode == 401 ||
-          e.response?.statusCode == 403) {
-        errorMessage = 'Неверный email или пароль';
-      } else if (e.response?.statusCode == 404) {
-        errorMessage = 'Пользователь не найден. Проверьте данные для входа';
-      } else {
-        // Используем ErrorUtils для остальных ошибок
-        final errorInfo = ErrorUtils.getErrorInfo(e);
-        errorMessage = errorInfo.message;
-      }
-
-      debugPrint('Login error: $e');
-      debugPrint('Error message shown to user: $errorMessage');
-
-      state = state.copyWith(
-        isLoading: false,
-        error: errorMessage,
-        clearLoginVerificationChallenge: true,
-      );
-      return false;
-    } catch (e, stackTrace) {
-      debugPrint('Login error: $e');
-
-      await ClientLogService.instance.captureNonFatal(
-        'Неожиданная ошибка входа',
-        error: e,
-        stackTrace: stackTrace,
-        data: {'domain': domain},
-      );
-
-      state = state.copyWith(isLoading: false, error: 'Произошла ошибка: $e');
-      return false;
-    }
+      },
+      outcome: (result) =>
+          result ? WorkflowStage.succeeded : WorkflowStage.failed,
+    );
   }
 
   Future<LoginVerificationRequestInfo> requestLoginVerification({
@@ -901,11 +923,27 @@ class AuthNotifier extends Notifier<AuthState> {
   bool _isLoggingOut = false;
 
   Future<void> logout() async {
+    // Another browser tab owns shared storage now. Forget this tab's identity
+    // without deleting that tab's token, preferences or push installation.
+    if (_apiClient.takeExternalSessionChange()) {
+      _pushSessionGeneration++;
+      _pushReceiptRetryTimer?.cancel();
+      _pushRegistrationRetryTimer?.cancel();
+      _initialLoadDone = true;
+      ref.read(chatPresenceServiceProvider).stopForLogout();
+      PushNotificationService.clearActiveClient();
+      AnalyticsService.clearBrowserSession();
+      ClientLogService.instance.clearUserContext();
+      state = const AuthState(isLoggedIn: false, isLoading: false);
+      _invalidateAllProviders();
+      return;
+    }
     if (_isLoggingOut) {
       debugPrint('🚪 Logout already in progress, skipping');
       return;
     }
     _isLoggingOut = true;
+    _apiClient.prepareForLogout();
     _pushSessionGeneration++;
     _pushReceiptRetryTimer?.cancel();
     try {
@@ -915,6 +953,7 @@ class AuthNotifier extends Notifier<AuthState> {
       _pushRegistrationRetryAttempt = 0;
       _pendingRefreshedPushToken = null;
       PushNotificationService.clearActiveClient();
+      AnalyticsService.clearBrowserSession();
       // Revoke the installation address even when the authenticated DELETE
       // cannot reach our backend. Run in parallel so logout remains bounded.
       final revokePushToken = PushNotificationService.revokeTokenForLogout();
@@ -943,6 +982,11 @@ class AuthNotifier extends Notifier<AuthState> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove(_kIsLoggedInKey);
         await prefs.remove(_kUserEmailKey);
+        final lastCompany =
+            state.userDomain ?? prefs.getString(_kUserDomainKey);
+        if (lastCompany != null && lastCompany.trim().isNotEmpty) {
+          await prefs.setString('last_company_domain', lastCompany);
+        }
         await prefs.remove(_kUserDomainKey);
         await prefs.remove(_kTokenKey); // legacy cleanup
         await prefs.remove(_kClientIdKey);
@@ -987,6 +1031,7 @@ class AuthNotifier extends Notifier<AuthState> {
       // Сначала обновляем state — при перестройке провайдеры увидят isLoggedIn: false
       state = const AuthState(isLoggedIn: false, isLoading: false);
       PushNotificationService.clearActiveClient();
+      AnalyticsService.clearBrowserSession();
       ClientLogService.instance.clearUserContext();
 
       // Затем инвалидируем все провайдеры
@@ -1000,6 +1045,7 @@ class AuthNotifier extends Notifier<AuthState> {
       // Всё равно устанавливаем состояние "разлогинен" даже если была ошибка
       state = const AuthState(isLoggedIn: false, isLoading: false);
       PushNotificationService.clearActiveClient();
+      AnalyticsService.clearBrowserSession();
       ClientLogService.instance.clearUserContext();
 
       // Invalidate providers even on error
@@ -1028,8 +1074,21 @@ class AuthNotifier extends Notifier<AuthState> {
       }
     }
 
+    final resolvedClientId = clientId ?? clientData?['id'] as int?;
+    if (resolvedClientId != null &&
+        resolvedClientId > 0 &&
+        agentId != null &&
+        agentId > 0) {
+      AnalyticsService.setBrowserSession(
+        _apiClient,
+        clientId: resolvedClientId,
+        agentId: agentId,
+      );
+    } else {
+      AnalyticsService.clearBrowserSession();
+    }
     ClientLogService.instance.setUserContext(
-      userId: clientId ?? clientData?['id'] as int?,
+      userId: resolvedClientId,
       clientCode: clientCode,
       agentId: agentId,
     );
@@ -1077,6 +1136,8 @@ class AuthNotifier extends Notifier<AuthState> {
 
     // Invoices
     inv(invoicesListProvider);
+    inv(invoiceDirectoryProvider);
+    inv(invoiceDirectoryPageProvider);
     inv(invoicesDigestProvider);
     inv(invoicesCountProvider);
     inv(invoiceStatusesProvider);
@@ -1087,10 +1148,13 @@ class AuthNotifier extends Notifier<AuthState> {
     inv(photosDaysProvider);
     inv(photosByDateProvider);
     inv(paginatedPhotosProvider);
+    inv(paginatedPhotosByDateProvider);
+    inv(filteredPhotosProvider);
     inv(photosSearchProvider);
 
     // Notifications
     inv(notificationsControllerProvider);
+    inv(notificationsHistoryInfoProvider);
     inv(unreadCountProvider);
 
     // SP Finance
@@ -1102,7 +1166,9 @@ class AuthNotifier extends Notifier<AuthState> {
     inv(chatControllerProvider);
     inv(paymentChatControllerProvider);
     inv(newsListProvider);
+    inv(newsItemProvider);
     inv(rulesListProvider);
+    inv(ruleItemProvider);
 
     debugPrint('✅ All providers invalidated');
   }

@@ -18,6 +18,27 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
+  testWidgets('ordinary protected link retains query through authentication', (
+    tester,
+  ) async {
+    final fixture = await _pumpRouter(
+      tester,
+      initialAuthState: const AuthState(isLoggedIn: false, isLoading: false),
+      initialLocation: '/purchase-blanks/invalid?source=notification',
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(fixture.router.routeInformationProvider.value.uri.path, '/login');
+    fixture.authNotifier.authenticate();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(
+      fixture.router.routeInformationProvider.value.uri.toString(),
+      '/purchase-blanks/invalid?source=notification',
+    );
+    expect(find.text('Некорректный ID бланка выкупа'), findsOneWidget);
+    await _finishWidgetTest(tester);
+  });
+
   testWidgets('ссылка сохраняется на входе и завершается после авторизации', (
     tester,
   ) async {
