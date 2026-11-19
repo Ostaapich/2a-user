@@ -12,6 +12,7 @@ import '../../../core/network/api_client.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../../core/services/websocket_provider.dart';
 import '../../../core/utils/error_utils.dart';
+import 'support_ai_activity.dart';
 
 // ==================== Chat Repository ====================
 
@@ -217,6 +218,23 @@ class ChatRepository {
     }
   }
 
+  Future<SupportAiActivity?> fetchAiActivity({
+    required int conversationId,
+  }) async {
+    try {
+      final response = await _apiClient.get(
+        '/client/chat/activity',
+        queryParameters: {'conversationId': conversationId},
+      );
+      return response.statusCode == 200
+          ? SupportAiActivity.fromJson(response.data)
+          : null;
+    } catch (_) {
+      // Old backends and transient failures must never break ordinary chat.
+      return null;
+    }
+  }
+
   /// Получить новые сообщения после указанного ID (для polling)
   Future<List<ChatMessage>> getNewMessages(
     int conversationId,
@@ -269,6 +287,7 @@ class ChatState {
   final bool hasMoreHistory;
   final bool isLoadingHistory;
   final bool historyError;
+  final bool isAssistantTyping;
 
   const ChatState({
     this.conversation,
@@ -282,6 +301,7 @@ class ChatState {
     this.hasMoreHistory = false,
     this.isLoadingHistory = false,
     this.historyError = false,
+    this.isAssistantTyping = false,
   });
 
   ChatState copyWith({
@@ -297,6 +317,7 @@ class ChatState {
     bool? hasMoreHistory,
     bool? isLoadingHistory,
     bool? historyError,
+    bool? isAssistantTyping,
   }) {
     return ChatState(
       conversation: conversation ?? this.conversation,
@@ -310,6 +331,7 @@ class ChatState {
       hasMoreHistory: hasMoreHistory ?? this.hasMoreHistory,
       isLoadingHistory: isLoadingHistory ?? this.isLoadingHistory,
       historyError: historyError ?? this.historyError,
+      isAssistantTyping: isAssistantTyping ?? this.isAssistantTyping,
     );
   }
 }
@@ -324,6 +346,14 @@ class ChatController extends Notifier<ChatState> {
   StreamSubscription<Map<String, dynamic>>? _messageEditedSubscription;
   StreamSubscription<Map<String, dynamic>>? _messageDeletedSubscription;
   Timer? _fallbackPollingTimer;
+  Timer? _assistantExpiryTimer;
+  Timer? _assistantPollingTimer;
+  StreamSubscription<Map<String, dynamic>>? _typingSubscription;
+  SupportAiActivityTracker _assistantActivity = SupportAiActivityTracker();
+  int _activityRequest = 0;
+  int _activityRevision = 0;
+  bool _activityInFlight = false;
+  bool _activityRefreshPending = false;
   bool _isRealtimeActive = false;
   bool _pollInFlight = false;
   int _generation = 0;
@@ -345,6 +375,10 @@ class ChatController extends Notifier<ChatState> {
       _messageEditedSubscription?.cancel();
       _messageDeletedSubscription?.cancel();
       _fallbackPollingTimer?.cancel();
+      _assistantExpiryTimer?.cancel();
+      _assistantPollingTimer?.cancel();
+      _typingSubscription?.cancel();
+      _activityRequest++;
       final conversationId = _conversationIdForCleanup;
       if (conversationId != null) {
         _wsService.leaveConversation(conversationId);
@@ -352,6 +386,11 @@ class ChatController extends Notifier<ChatState> {
       }
     });
 
+    _assistantExpiryTimer?.cancel();
+    _assistantPollingTimer?.cancel();
+    _assistantPollingTimer = null;
+    _assistantActivity = SupportAiActivityTracker();
+    _activityRequest++;
     return const ChatState();
   }
 
@@ -373,6 +412,8 @@ class ChatController extends Notifier<ChatState> {
             if (state.conversation != null) {
               _wsService.joinConversation(state.conversation!.id);
               _wsService.sendPresence(state.conversation!.id, true);
+              unawaited(pollNewMessages());
+              unawaited(_refreshAssistantActivity());
             }
           } else if (status == SocketConnectionStatus.disconnected) {
             // WebSocket отключен - начинаем fallback polling
@@ -392,6 +433,7 @@ class ChatController extends Notifier<ChatState> {
         // Добавляем сообщение только если оно для текущего conversation
         if (state.conversation != null &&
             message.conversationId == state.conversation!.id) {
+          _observeAssistantReply(message);
           // Проверка на дубликаты
           final existingIds = state.messages.map((m) => m.id).toSet();
           if (!existingIds.contains(message.id)) {
@@ -420,6 +462,31 @@ class ChatController extends Notifier<ChatState> {
       } catch (e) {
         debugPrint('[WebSocket] Error parsing message: $e');
       }
+    });
+
+    _typingSubscription?.cancel();
+    _typingSubscription = _wsService.typing.listen((data) {
+      if (!_isRealtimeActive ||
+          !ref.mounted ||
+          data['conversationId'] != state.conversation?.id ||
+          data['isAssistant'] != true ||
+          data['userType'] != 'employee' ||
+          data['userId'] != 0) {
+        return;
+      }
+      final update = SupportAiActivity.fromJson(data);
+      if (update == null) return;
+      _activityRevision++;
+      if (update.isTyping || update.messageId != null) {
+        _assistantActivity.apply(
+          update,
+          state.conversation!.id,
+          DateTime.now(),
+        );
+        _syncAssistantActivity();
+      }
+      // A stop without a request ID is a hint, not permission to hide a newer job.
+      unawaited(_refreshAssistantActivity());
     });
 
     // Слушаем редактирование сообщений (отменяем предыдущую подписку при reconnect)
@@ -484,6 +551,7 @@ class ChatController extends Notifier<ChatState> {
     _generation++;
 
     if (!active) {
+      _hideAssistantActivity();
       _fallbackPollingTimer?.cancel();
       if (state.conversation != null) {
         _wsService.leaveConversation(state.conversation!.id);
@@ -499,6 +567,95 @@ class ChatController extends Notifier<ChatState> {
         _startFallbackPolling();
       }
       unawaited(pollNewMessages());
+      unawaited(_refreshAssistantActivity());
+    }
+  }
+
+  void _hideAssistantActivity() {
+    _activityRequest++;
+    _activityRevision++;
+    _activityRefreshPending = false;
+    _assistantExpiryTimer?.cancel();
+    _assistantPollingTimer?.cancel();
+    _assistantPollingTimer = null;
+    _assistantActivity.hide();
+    state = state.copyWith(isAssistantTyping: false);
+  }
+
+  void _observeAssistantReply(ChatMessage message) {
+    if (message.senderType != 'employee') return;
+    _activityRevision++;
+    _assistantActivity.observeReply(
+      messageId: message.id,
+      replyToMessageId: message.replyToMessageId,
+      isHuman: message.senderId > 0,
+    );
+    _syncAssistantActivity();
+  }
+
+  void _syncAssistantActivity() {
+    if (!ref.mounted) return;
+    _assistantExpiryTimer?.cancel();
+    final typing =
+        _isRealtimeActive && _assistantActivity.isTyping(DateTime.now());
+    state = state.copyWith(isAssistantTyping: typing);
+    if (!typing) {
+      _assistantPollingTimer?.cancel();
+      _assistantPollingTimer = null;
+      return;
+    }
+    final expiry = _assistantActivity.activity!.expiresAt!;
+    _assistantExpiryTimer = Timer(expiry.difference(DateTime.now()), () {
+      if (!ref.mounted) return;
+      _activityRevision++;
+      _assistantActivity.hide();
+      _syncAssistantActivity();
+    });
+    _assistantPollingTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
+      if (_isRealtimeActive) unawaited(_refreshAssistantActivity());
+    });
+  }
+
+  Future<void> _refreshAssistantActivity() async {
+    if (!ref.mounted || !_isRealtimeActive || state.conversation == null) {
+      return;
+    }
+    if (_activityInFlight) {
+      _activityRefreshPending = true;
+      return;
+    }
+    _activityInFlight = true;
+    final conversationId = state.conversation!.id;
+    final generation = _generation;
+    final revision = _activityRevision;
+    final request = ++_activityRequest;
+    try {
+      final update = await _repository.fetchAiActivity(
+        conversationId: conversationId,
+      );
+      if (!ref.mounted ||
+          !_isRealtimeActive ||
+          generation != _generation ||
+          request != _activityRequest ||
+          revision != _activityRevision ||
+          state.conversation?.id != conversationId) {
+        return;
+      }
+      final wasTyping = state.isAssistantTyping;
+      if (update == null) {
+        _assistantActivity.hide();
+      } else {
+        _assistantActivity.apply(update, conversationId, DateTime.now());
+      }
+      _syncAssistantActivity();
+      if (wasTyping && !state.isAssistantTyping) unawaited(pollNewMessages());
+    } finally {
+      _activityInFlight = false;
+      final pending = _activityRefreshPending;
+      _activityRefreshPending = false;
+      if (pending && ref.mounted && _isRealtimeActive) {
+        unawaited(_refreshAssistantActivity());
+      }
     }
   }
 
@@ -517,6 +674,9 @@ class ChatController extends Notifier<ChatState> {
       final page = await _repository.getHistoryPage();
       if (!ref.mounted || generation != _loadGeneration) return;
       final conversation = page.conversation;
+      if (state.conversation?.id != conversation.id) {
+        _assistantActivity = SupportAiActivityTracker();
+      }
       _conversationIdForCleanup = conversation.id;
       final messages = conversation.messages;
       final lastId = messages.isNotEmpty ? messages.last.id : 0;
@@ -528,6 +688,11 @@ class ChatController extends Notifier<ChatState> {
         lastMessageId: lastId,
         hasMoreHistory: page.hasMore,
       );
+
+      for (final message in messages) {
+        _observeAssistantReply(message);
+      }
+      if (_isRealtimeActive) unawaited(_refreshAssistantActivity());
 
       // Присоединяемся к WebSocket комнате только пока вкладка активна.
       if (_isRealtimeActive) {
@@ -603,6 +768,8 @@ class ChatController extends Notifier<ChatState> {
         lastMessageId: nextLastMessageId,
         pendingAttachments: [], // Очищаем pending attachments
       );
+      _activityRevision++;
+      unawaited(_refreshAssistantActivity());
       ClientLogService.instance.add(
         type: 'support_chat_message_sent',
         level: 'info',
@@ -618,6 +785,7 @@ class ChatController extends Notifier<ChatState> {
         message: 'Ошибка отправки сообщения в чат поддержки',
         data: {'error': e.toString(), 'hasAttachments': hasAttachments},
       );
+      _hideAssistantActivity();
       state = state.copyWith(
         isSending: false,
         error: _supportChatUserErrorMessage(
@@ -784,6 +952,9 @@ class ChatController extends Notifier<ChatState> {
             .toList();
 
         if (uniqueNewMessages.isNotEmpty) {
+          for (final message in uniqueNewMessages) {
+            _observeAssistantReply(message);
+          }
           final allMessages = [...state.messages, ...uniqueNewMessages];
           final lastId = allMessages.isNotEmpty
               ? allMessages.last.id

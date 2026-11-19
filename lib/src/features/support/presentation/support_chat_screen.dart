@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'chat_draft_send.dart';
+import 'support_ai_typing_indicator.dart';
 import 'package:twoalogisticcabineuser/src/core/ui/app_toast.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -160,13 +161,18 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
     debugPrint('App lifecycle state changed to: $state');
 
     if (state == AppLifecycleState.resumed) {
+      _chatController.setRealtimeActive(true);
       // Обновляем сообщения при возврате в приложение
       _chatController.pollNewMessages();
       // Уведомляем сервер что чат снова открыт
       _notifyServerChatOpened();
-    } else if (state == AppLifecycleState.paused) {
-      // Уведомляем сервер что приложение ушло в фон
-      ref.read(chatPresenceServiceProvider).onAppPaused();
+    } else {
+      _chatController.setRealtimeActive(false);
+      if (state == AppLifecycleState.paused ||
+          state == AppLifecycleState.hidden) {
+        // Уведомляем сервер что приложение ушло в фон
+        ref.read(chatPresenceServiceProvider).onAppPaused();
+      }
     }
   }
 
@@ -573,7 +579,7 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
       return _buildEmptyState();
     }
 
-    return ListView.builder(
+    final list = ListView.builder(
       controller: _scrollController,
       reverse: true,
       padding: EdgeInsets.fromLTRB(
@@ -613,6 +619,16 @@ class _SupportChatScreenState extends ConsumerState<SupportChatScreen>
         final message = messages[messages.length - 1 - index];
         return _buildMessageBubble(message);
       },
+    );
+    return Column(
+      children: [
+        Expanded(child: list),
+        if (chatState.isAssistantTyping)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: SupportAiTypingIndicator(),
+          ),
+      ],
     );
   }
 
