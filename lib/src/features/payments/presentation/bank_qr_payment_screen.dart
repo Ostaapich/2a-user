@@ -385,6 +385,17 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
 
   Widget _buildContent() {
     final res = _result!;
+    final selection = widget.selection;
+    final wholeYuan =
+        selection != null &&
+        selection.method == 'alipay' &&
+        selection.amount.isFinite &&
+        selection.amount == selection.amount.roundToDouble();
+    final foreignDecimals = selection?.method == 'usdt_trc20'
+        ? 6
+        : wholeYuan
+        ? 0
+        : 2;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -419,9 +430,8 @@ class _BankQrPaymentSheetState extends ConsumerState<BankQrPaymentSheet> {
               ? tr(context, ru: 'Сумма ранее созданной оплаты', zh: '先前付款金额')
               : tr(context, ru: 'Сумма к оплате', zh: '应付金额'),
           child: Text(
-            widget.selection?.method == 'usdt_trc20' ||
-                    widget.selection?.method == 'alipay'
-                ? '${widget.selection!.amount.toStringAsFixed(widget.selection!.method == 'usdt_trc20' ? 6 : 2)} ${widget.selection!.currency}'
+            selection?.method == 'usdt_trc20' || selection?.method == 'alipay'
+                ? '${selection!.amount.toStringAsFixed(foreignDecimals)} ${selection.currency}'
                 : _formatRubKopecks(res.sumKopecks),
             textAlign: TextAlign.center,
             style: const TextStyle(

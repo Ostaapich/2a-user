@@ -282,6 +282,33 @@ void main() {
     expect(selection.currency, 'USDT');
   });
 
+  test(
+    'Alipay selection preserves the whole-yuan amount supplied by server',
+    () {
+      final selection = InvoicePaymentSelection.fromJson({
+        'method': 'alipay',
+        'paymentId': 77,
+        'currency': 'CNY',
+        'amount': '124.00',
+        'qrImageUrl': '/uploads/alipay.png',
+        'cnyRounding': 'whole_yuan_ceil_v1',
+      });
+      expect(selection.amount, 124);
+      expect(selection.currency, 'CNY');
+      expect(selection.paymentId, 77);
+      final legacy = InvoicePaymentSelection.fromJson({
+        'method': 'alipay',
+        'paymentId': 78,
+        'currency': 'CNY',
+        'amount': '123.45',
+        'qrImageUrl': '/uploads/legacy-alipay.png',
+        'receiptOnly': true,
+      });
+      expect(legacy.amount, 123.45);
+      expect(legacy.receiptOnly, isTrue);
+    },
+  );
+
   test('foreign payment rejects missing credentials and invalid amount', () {
     for (final value in [null, 'NaN', '0', '-1']) {
       expect(

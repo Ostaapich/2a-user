@@ -3006,8 +3006,8 @@ class _TracksScreenState extends ConsumerState<TracksScreen> {
                               Text(
                                 tr(
                                   context,
-                                  ru: '\$${tariff.baseCost.toStringAsFixed(2)} / кг',
-                                  zh: '\$${tariff.baseCost.toStringAsFixed(2)} / 公斤',
+                                  ru: 'от \$${tariff.baseCost.toStringAsFixed(2)} / кг',
+                                  zh: '\$${tariff.baseCost.toStringAsFixed(2)} / 公斤起',
                                 ),
                                 style: const TextStyle(
                                   color: Colors.black54,

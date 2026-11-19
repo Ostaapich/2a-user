@@ -97,6 +97,7 @@ Future<void> _pump(
   String method,
   _Receipts receipts, {
   VoidCallback? onChange,
+  double amount = 123.45,
 }) async {
   await tester.pumpApp(
     Scaffold(
@@ -112,7 +113,7 @@ Future<void> _pump(
                 method: method,
                 paymentId: 77,
                 currency: method == 'alipay' ? 'CNY' : 'USDT',
-                amount: 123.45,
+                amount: amount,
                 qrImageUrl: '/uploads/qr.png',
                 walletAddress: method == 'alipay'
                     ? null
@@ -165,6 +166,32 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final (amount, amountText) in [(123.0, '123 CNY'), (7.70, '7.70 CNY')]) {
+    testWidgets('Alipay displays $amountText and keeps the selected attempt', (
+      tester,
+    ) async {
+      FilePicker.platform = _Picker();
+      final receipts = _Receipts();
+      await _pump(tester, 'alipay', receipts, amount: amount);
+      expect(find.text(amountText), findsOneWidget);
+      expect(receipts.starts, 0);
+      final attach = find.text('Приложить чек');
+      await tester.ensureVisible(attach);
+      await tester.pumpAndSettle();
+      await tester.tap(attach);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('Файлы').hitTestable());
+      await tester.pumpAndSettle();
+      expect(receipts.receivedPaymentId, 77);
+      expect(receipts.receivedName, 'proof.pdf');
+      expect(receipts.starts, 0);
+      expect(find.text('Чек отправлен на проверку'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
+    });
+  }
 
   for (final method in ['usdt_trc20', 'alipay']) {
     testWidgets(
